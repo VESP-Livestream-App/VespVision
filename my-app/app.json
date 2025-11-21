@@ -10,7 +10,12 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.eason.myapp"
+      "bundleIdentifier": "com.eason.myapp",
+      "infoPlist": {
+        "NSCameraUsageDescription": "Vesp Vision needs access to your Camera.",
+        "NSMicrophoneUsageDescription": "Vesp Vision needs access to your Microphone.",
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
@@ -20,7 +25,12 @@
         "monochromeImage": "./assets/images/android-icon-monochrome.png"
       },
       "edgeToEdgeEnabled": true,
-      "predictiveBackGestureEnabled": false
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO"
+      ],
+      "package": "com.eason.myapp"
     },
     "web": {
       "output": "static",
@@ -39,11 +49,25 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      [
+        "react-native-vision-camera",
+        {
+          "cameraPermissionText": "Vesp Vision needs access to your Camera.",
+          "enableMicrophonePermission": true,
+          "microphonePermissionText": "Vesp Vision needs access to your Microphone."
+        }
       ]
     ],
     "experiments": {
       "typedRoutes": true,
       "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "64a2a123-c656-4c6d-912e-298503c7b26f"
+      }
     }
   }
 }
