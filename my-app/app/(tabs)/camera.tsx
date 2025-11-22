@@ -63,7 +63,6 @@ export default function CameraScreen() {
         style={styles.camera}
         device={device}
         isActive={isActive}
-        orientation="portrait"
       />
       <View style={styles.overlay}>
         <ThemedText style={styles.title}>Camera View</ThemedText>
