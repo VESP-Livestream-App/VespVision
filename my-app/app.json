@@ -14,7 +14,8 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Vesp Vision needs access to your Camera.",
         "NSMicrophoneUsageDescription": "Vesp Vision needs access to your Microphone.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSBluetoothAlwaysUsageDescription": "Allow Vesp Vision to scan and connect to your BLE devices."
       }
     },
     "android": {
@@ -28,7 +29,10 @@
       "predictiveBackGestureEnabled": false,
       "permissions": [
         "android.permission.CAMERA",
-        "android.permission.RECORD_AUDIO"
+        "android.permission.RECORD_AUDIO",
+        "android.permission.BLUETOOTH_SCAN",
+        "android.permission.BLUETOOTH_CONNECT",
+        "android.permission.ACCESS_FINE_LOCATION" 
       ],
       "package": "com.eason.myapp"
     },
@@ -56,6 +60,14 @@
           "cameraPermissionText": "Vesp Vision needs access to your Camera.",
           "enableMicrophonePermission": true,
           "microphonePermissionText": "Vesp Vision needs access to your Microphone."
+        }
+      ],
+      [
+        "react-native-ble-plx",
+        {
+          "isBackgroundEnabled": true,
+          "modes": ["peripheral", "central"],
+          "bluetoothAlwaysPermission": "Allow Vesp Vision to scan and connect to your BLE devices."
         }
       ]
     ],
