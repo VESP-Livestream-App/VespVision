@@ -65,8 +65,8 @@
       [
         "react-native-ble-plx",
         {
-          "isBackgroundEnabled": true,
-          "modes": ["peripheral", "central"],
+          "isBackgroundEnabled": false,
+          "modes": ["central"],
           "bluetoothAlwaysPermission": "Allow Vesp Vision to scan and connect to your BLE devices."
         }
       ]
