@@ -37,6 +37,13 @@ export default function TabLayout() {
           tabBarIcon: ({ color }) => <IconSymbol size={28} name="camera.fill" color={color} />,
         }}
       />
+      <Tabs.Screen
+        name="ble"
+        options={{
+          title: 'BLE',
+          tabBarIcon: ({ color }) => <IconSymbol size={28} name="bolt.horizontal.fill" color={color} />,
+        }}
+      />
     </Tabs>
   );
 }
