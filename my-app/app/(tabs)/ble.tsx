@@ -33,6 +33,9 @@ export default function BleScreen() {
   // manager and subscription refs
   const managerRef = useRef<BleManager | null>(new BleManager());
   const stateSubRef = useRef<any>(null);
+  // heartbeat (polling) ref to monitor connection health
+  const heartbeatRef = useRef<number | null>(null);
+  const HEARTBEAT_INTERVAL_MS = 2000; // 2s poll interval
 
   useEffect(() => {
     let mounted = true;
@@ -45,14 +48,7 @@ export default function BleScreen() {
         const connected = await mgr.connectedDevices(serviceFilter);
         if (!mounted) return;
         if (connected && connected.length > 0) {
-          // show them in the list and mark the first as connected
-          setDevices((prev) => {
-            // merge to avoid duplicates (connected devices first)
-            const ids = new Set(prev.map((d) => d.id));
-            const merged = [...connected];
-            for (const d of prev) if (!ids.has(d.id)) merged.push(d);
-            return merged;
-          });
+          ensureDeviceInList(connected[0]);
           setConnectedId(connected[0].id);
           // initialize inputs when there's an existing connection
           setAngleInput('0');
@@ -74,6 +70,7 @@ export default function BleScreen() {
                 if (prev.find((p) => p.id === reopened.id)) return prev;
                 return [...prev, reopened];
               });
+              ensureDeviceInList(reopened);
               setConnectedId(reopened.id);
             } catch (err) {
               // fail silently; native/OS may prevent reconnect when app was closed
@@ -94,6 +91,11 @@ export default function BleScreen() {
         // stop any scanning and remove subscription
         managerRef.current?.stopDeviceScan();
         if (stateSubRef.current?.remove) stateSubRef.current.remove();
+        // clear heartbeat interval if running
+        if (heartbeatRef.current != null) {
+          clearInterval(heartbeatRef.current as unknown as number);
+          heartbeatRef.current = null;
+        }
         managerRef.current?.destroy();
         managerRef.current = null;
       } catch (e) {
@@ -101,6 +103,53 @@ export default function BleScreen() {
       }
     };
   }, []);
+
+  // Heartbeat: poll to detect lost connections when `connectedId` is set
+  useEffect(() => {
+    // stop any existing heartbeat
+    function stopHeartbeat() {
+      if (heartbeatRef.current != null) {
+        clearInterval(heartbeatRef.current as unknown as number);
+        heartbeatRef.current = null;
+      }
+    }
+
+    async function handleLostConnection(lostId: string) {
+      try {
+        const cur = await AsyncStorage.getItem(STORAGE_KEY);
+        if (cur === lostId) await AsyncStorage.removeItem(STORAGE_KEY);
+      } catch (e) {
+        console.warn('remove persisted id on lost connection failed', e);
+      }
+      // clear connected id and notify user
+      setConnectedId((prev) => (prev === lostId ? null : prev));
+      Alert.alert('Disconnected', 'BLE connection was lost');
+    }
+
+    if (!connectedId) {
+      stopHeartbeat();
+      return;
+    }
+
+    // start heartbeat for the current connected id
+    const deviceId = connectedId;
+    heartbeatRef.current = setInterval(async () => {
+      try {
+        const ok = await isDeviceConnectedById(deviceId);
+        if (!ok) {
+          // lost connection
+          stopHeartbeat();
+          handleLostConnection(deviceId);
+        }
+      } catch (e) {
+        // treat errors as disconnected
+        stopHeartbeat();
+        handleLostConnection(deviceId);
+      }
+    }, HEARTBEAT_INTERVAL_MS) as unknown as number;
+
+    return () => stopHeartbeat();
+  }, [connectedId]);
 
   async function requestPermissions() {
     // Platform-aware permission requests (Android & iOS)
@@ -196,6 +245,7 @@ export default function BleScreen() {
 
       const connected = await managerRef.current!.connectToDevice(device.id);
       await connected.discoverAllServicesAndCharacteristics();
+      ensureDeviceInList(connected);
       setConnectedId(device.id);
       // persist last connected id (JS-only)
       try {
@@ -243,6 +293,13 @@ export default function BleScreen() {
       console.warn('isDeviceConnected error', e);
       return false;
     }
+  }
+
+  function ensureDeviceInList(device: Device) {
+  setDevices((prev) => {
+    if (prev.find((d) => d.id === device.id)) return prev;
+    return [...prev, device];
+  });
   }
 
   // Helper: encode Uint8Array to base64 (no external deps)
