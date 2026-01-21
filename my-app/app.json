@@ -10,7 +10,7 @@
     "newArchEnabled": true,
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.eason.myapp",
+      "bundleIdentifier": "com.jerryvv123.myapp",
       "infoPlist": {
         "NSCameraUsageDescription": "Vesp Vision needs access to your Camera.",
         "NSMicrophoneUsageDescription": "Vesp Vision needs access to your Microphone.",
@@ -30,7 +30,7 @@
         "android.permission.CAMERA",
         "android.permission.RECORD_AUDIO"
       ],
-      "package": "com.eason.myapp"
+      "package": "com.jerryvv123.myapp"
     },
     "web": {
       "output": "static",
