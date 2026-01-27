@@ -16,6 +16,53 @@ This is an [Expo](https://expo.dev) project created with [`create-expo-app`](htt
    npx expo start
    ```
 
+## TFLite + YOLO setup (iOS)
+
+1. Install dependencies
+
+   ```bash
+   npm install
+   ```
+
+2. Install pods
+
+   ```bash
+   cd ios
+   pod install
+   cd ..
+   ```
+
+3. Add the model to the iOS bundle
+
+   Open `ios/myapp.xcworkspace` → target **myapp** → **Build Phases** → **Copy Bundle Resources**  
+   Add:
+
+   - `yolo26n_float32.tflite`
+
+4. Build the dev client
+
+   ```bash
+   npx expo run:ios
+   ```
+
+5. Start Metro
+
+   ```bash
+   npx expo start --dev-client -c
+   ```
+
+## Using the app
+
+- **Camera tab**: tap **Snap Inference** to run YOLO on the camera frame.
+- **Test tab**: run inference on `test.jpg`, `test2.jpg`, `test3.jpg`, `test4.jpg`.
+
+## iOS signing help (physical device)
+
+If you get signing errors:
+1. Open `ios/myapp.xcworkspace` in Xcode
+2. **Signing & Capabilities** → enable **Automatically manage signing**
+3. Select your **Team**
+
 In the output, you'll find options to open the app in a
 
 - [development build](https://docs.expo.dev/develop/development-builds/introduction/)
