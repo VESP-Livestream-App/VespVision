@@ -1,0 +1,6 @@
+{
+  "name": "tflite-module",
+  "version": "1.0.0",
+  "description": "Expo native module wrapper for TensorFlow Lite",
+  "private": true
+}

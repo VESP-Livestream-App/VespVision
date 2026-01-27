@@ -60,7 +60,8 @@
         {
           "cameraPermissionText": "Vesp Vision needs access to your Camera.",
           "enableMicrophonePermission": true,
-          "microphonePermissionText": "Vesp Vision needs access to your Microphone."
+          "microphonePermissionText": "Vesp Vision needs access to your Microphone.",
+          "enableFrameProcessors": true
         }
       ]
     ],
