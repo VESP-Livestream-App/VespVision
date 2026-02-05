@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { StyleSheet, View, ActivityIndicator, Pressable, Image, ScrollView } from 'react-native';
+import { StyleSheet, View, ActivityIndicator, Pressable, Image, ScrollView, Modal, useWindowDimensions } from 'react-native';
 import { Asset } from 'expo-asset';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { ThemedView } from '@/components/themed-view';
@@ -7,6 +7,7 @@ import { ThemedText } from '@/components/themed-text';
 import { runYoloInference } from '@/modules/yoloInference';
 import { loadYoloModel, closeYoloModel } from '@/modules/yoloModel';
 import type { Detection } from '@/modules/yoloUtils';
+import { getSnapshots, subscribeSnapshots, type Snapshot as LiveSnapshot } from '@/modules/snapshotStore';
 
 const TEST_IMAGES = [
   { id: 'test.jpg', label: 'test.jpg', source: require('../../assets/test.jpg') },
@@ -45,7 +46,9 @@ export default function TestImageScreen() {
   const [detections, setDetections] = useState<Detection[]>([]);
   const [lastRunAt, setLastRunAt] = useState<number | null>(null);
   const [previewUri, setPreviewUri] = useState<string | null>(null);
+  const [liveSnapshots, setLiveSnapshots] = useState<LiveSnapshot[]>(getSnapshots());
   const [isModelLoaded, setIsModelLoaded] = useState(false);
+  const [viewer, setViewer] = useState<{ uri: string; detections: Detection[]; width?: number; height?: number } | null>(null);
   const [selectedImageId, setSelectedImageId] = useState(TEST_IMAGES[0].id);
   const [normalizeInput, setNormalizeInput] = useState(true);
   const [rgbOrder, setRgbOrder] = useState(true);
@@ -57,6 +60,18 @@ export default function TestImageScreen() {
     [selectedImageId]
   );
   const asset = useMemo(() => Asset.fromModule(selectedImage.source), [selectedImage]);
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const viewerSize = Math.max(220, Math.min(windowWidth - 32, windowHeight - 220));
+  const latestLiveSnapshot = liveSnapshots[0];
+
+  const formatDet = (det: Detection) => ({
+    label: det.className ?? det.class,
+    conf: (det.confidence * 100).toFixed(1),
+    x: det.x.toFixed(1),
+    y: det.y.toFixed(1),
+    w: det.width.toFixed(1),
+    h: det.height.toFixed(1),
+  });
 
   useEffect(() => {
     let isMounted = true;
@@ -73,6 +88,13 @@ export default function TestImageScreen() {
         closeYoloModel();
       }
     };
+  }, []);
+
+  useEffect(() => {
+    const unsubscribe = subscribeSnapshots((items) => {
+      setLiveSnapshots(items);
+    });
+    return unsubscribe;
   }, []);
 
   const runTestInference = async () => {
@@ -159,7 +181,9 @@ export default function TestImageScreen() {
         <View style={styles.previewContainer}>
           <ThemedText style={styles.previewLabel}>Resized 640×640 Preview</ThemedText>
           <View style={styles.previewWrapper}>
-            <Image source={{ uri: previewUri }} style={styles.previewImage} />
+            <Pressable onPress={() => setViewer({ uri: previewUri, detections, width: 640, height: 640 })}>
+              <Image source={{ uri: previewUri }} style={styles.previewImage} resizeMode="contain" />
+            </Pressable>
             <View style={styles.previewOverlay} pointerEvents="none">
               {detections.slice(0, 10).map((det, idx) => {
                 const scale = 160 / 640;
@@ -182,6 +206,86 @@ export default function TestImageScreen() {
           </View>
         </View>
       )}
+      {liveSnapshots.length > 0 && (
+        <View style={styles.previewContainer}>
+          <ThemedText style={styles.previewLabel}>Camera Snapshots</ThemedText>
+          {liveSnapshots.map((snap) => (
+            <View key={snap.id} style={styles.historyItem}>
+              <ThemedText style={styles.historyTitle}>
+                {new Date(snap.runAt).toLocaleTimeString()}
+              </ThemedText>
+              <View style={styles.previewWrapper}>
+                <Pressable onPress={() => setViewer({ uri: snap.uri, detections: snap.detections, width: snap.width, height: snap.height })}>
+                  <Image source={{ uri: snap.uri }} style={styles.previewImage} resizeMode="contain" />
+                </Pressable>
+                <View style={styles.previewOverlay} pointerEvents="none">
+                  {snap.detections.map((det, idx) => {
+                    const w = snap.width || 640;
+                    const h = snap.height || 640;
+                    const scale = Math.min(160 / w, 160 / h);
+                    const padX = (160 - w * scale) / 2;
+                    const padY = (160 - h * scale) / 2;
+                    const left = Math.max(0, padX + det.x * scale);
+                    const top = Math.max(0, padY + det.y * scale);
+                    const width = Math.max(1, det.width * scale);
+                    const height = Math.max(1, det.height * scale);
+                    return (
+                      <View
+                        key={`${snap.id}-${det.class}-${idx}`}
+                        style={[styles.box, { left, top, width, height }]}
+                      >
+                        <ThemedText style={styles.boxLabel}>
+                          {det.className ?? det.class} {(det.confidence * 100).toFixed(0)}%
+                        </ThemedText>
+                      </View>
+                    );
+                  })}
+                </View>
+              </View>
+            </View>
+          ))}
+        </View>
+      )}
+      <Modal
+        visible={!!viewer}
+        transparent
+        animationType="fade"
+        onRequestClose={() => setViewer(null)}
+      >
+        <View style={styles.viewerBackdrop}>
+          <Pressable style={styles.viewerClose} onPress={() => setViewer(null)}>
+            <ThemedText style={styles.viewerCloseText}>Close</ThemedText>
+          </Pressable>
+          {viewer && (
+            <View style={[styles.viewerFrame, { width: viewerSize, height: viewerSize }]}>
+              <Image source={{ uri: viewer.uri }} style={styles.viewerImage} resizeMode="contain" />
+              <View style={styles.viewerOverlay} pointerEvents="none">
+                {viewer.detections.map((det, idx) => {
+                  const w = viewer.width || 640;
+                  const h = viewer.height || 640;
+                  const scale = Math.min(viewerSize / w, viewerSize / h);
+                  const padX = (viewerSize - w * scale) / 2;
+                  const padY = (viewerSize - h * scale) / 2;
+                  const left = Math.max(0, padX + det.x * scale);
+                  const top = Math.max(0, padY + det.y * scale);
+                  const width = Math.max(1, det.width * scale);
+                  const height = Math.max(1, det.height * scale);
+                  return (
+                    <View
+                      key={`${viewer.uri}-${det.class}-${idx}`}
+                      style={[styles.viewerBox, { left, top, width, height }]}
+                    >
+                      <ThemedText style={styles.viewerBoxLabel}>
+                        {det.className ?? det.class} {(det.confidence * 100).toFixed(0)}%
+                      </ThemedText>
+                    </View>
+                  );
+                })}
+              </View>
+            </View>
+          )}
+        </View>
+      </Modal>
       <View style={styles.results}>
         {detections.slice(0, 20).map((det, idx) => (
           <ThemedText key={`${det.class}-${idx}`} style={styles.resultItem}>
@@ -284,6 +388,67 @@ const styles = StyleSheet.create({
     width: 160,
     height: 160,
   },
+  previewPressable: {
+    width: 160,
+    height: 160,
+  },
+  historyItem: {
+    alignItems: 'center',
+    gap: 6,
+    marginBottom: 12,
+  },
+  historyTitle: {
+    fontSize: 12,
+  },
+  viewerBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.8)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  viewerClose: {
+    position: 'absolute',
+    top: 40,
+    right: 20,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 8,
+  },
+  viewerCloseText: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '600',
+  },
+  viewerFrame: {
+    borderRadius: 10,
+    overflow: 'hidden',
+  },
+  viewerImage: {
+    width: '100%',
+    height: '100%',
+  },
+  viewerOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
+  viewerBox: {
+    position: 'absolute',
+    borderWidth: 2,
+    borderColor: 'rgba(0, 255, 0, 0.95)',
+    backgroundColor: 'rgba(0, 0, 0, 0.1)',
+  },
+  viewerBoxLabel: {
+    color: 'white',
+    fontSize: 10,
+    paddingHorizontal: 3,
+    paddingVertical: 2,
+    backgroundColor: 'rgba(0, 128, 0, 0.7)',
+  },
   previewImage: {
     width: 160,
     height: 160,
@@ -316,6 +481,21 @@ const styles = StyleSheet.create({
   },
   resultItem: {
     fontSize: 13,
+    marginBottom: 4,
+  },
+  logCard: {
+    marginTop: 12,
+    padding: 10,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.06)',
+  },
+  logTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    marginBottom: 6,
+  },
+  logRow: {
+    fontSize: 12,
     marginBottom: 4,
   },
 });

@@ -14,7 +14,7 @@ let hasLoggedOutputStats = false;
 
 type OutputLayout = 'predMajor' | 'classMajor';
 
-const preprocessRgb = (rgbData: Uint8Array, options: PreprocessOptions): number[] => {
+const preprocessRgb = (rgbData: ArrayLike<number>, options: PreprocessOptions): number[] => {
   const normalize = options.normalize ?? true;
   const rgbOrder = options.rgbOrder ?? true;
   const out: number[] = new Array(rgbData.length);
@@ -54,7 +54,7 @@ const preprocessRgb = (rgbData: Uint8Array, options: PreprocessOptions): number[
 };
 
 export const runYoloInference = async (
-  rgbData: Uint8Array,
+  rgbData: ArrayLike<number>,
   frameWidth: number,
   frameHeight: number,
   options: PreprocessOptions = {}

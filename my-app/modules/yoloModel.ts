@@ -1,6 +1,6 @@
 import { TFLite, isTFLiteAvailable } from '@/modules/TFLiteModule';
 
-export const YOLO_MODEL_FILENAME = 'yolo26n_float32.tflite';
+export const YOLO_MODEL_FILENAME = 'newer_best_int8.tflite';
 
 export const loadYoloModel = async (): Promise<boolean> => {
   if (!isTFLiteAvailable()) {
