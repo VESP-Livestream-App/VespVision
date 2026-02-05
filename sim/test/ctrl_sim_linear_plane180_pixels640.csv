@@ -1,0 +1,2 @@
+Total Time [s],Searching Time [s],Tracking Time [s],Number of Searching Intervals,Number of Tracking Intervals,Longest Searching Time [s],Longest Tracking Time [s],Movement Magnitude Upper-Bound [Degrees],Controller Gain,Servo Speed [Degrees/s],Field of View [Degrees],Tick Rate [s],Controller Rate [Hz]
+404.980685710907,0.3639552593231201,404.6162602901459,1,1,0.3639552593231201,404.6162602901459,15,25.0,60.0,70,25,3
