@@ -3,7 +3,7 @@
     "name": "my-app",
     "slug": "my-app",
     "version": "1.0.0",
-    "orientation": "portrait",
+    "orientation": "default",
     "icon": "./assets/images/icon.png",
     "scheme": "myapp",
     "userInterfaceStyle": "automatic",
@@ -14,7 +14,18 @@
       "infoPlist": {
         "NSCameraUsageDescription": "Vesp Vision needs access to your Camera.",
         "NSMicrophoneUsageDescription": "Vesp Vision needs access to your Microphone.",
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UISupportedInterfaceOrientations": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ],
+        "UISupportedInterfaceOrientations~ipad": [
+          "UIInterfaceOrientationPortrait",
+          "UIInterfaceOrientationPortraitUpsideDown",
+          "UIInterfaceOrientationLandscapeLeft",
+          "UIInterfaceOrientationLandscapeRight"
+        ]
       }
     },
     "android": {
@@ -60,7 +71,8 @@
         {
           "cameraPermissionText": "Vesp Vision needs access to your Camera.",
           "enableMicrophonePermission": true,
-          "microphonePermissionText": "Vesp Vision needs access to your Microphone."
+          "microphonePermissionText": "Vesp Vision needs access to your Microphone.",
+          "enableFrameProcessors": true
         }
       ]
     ],

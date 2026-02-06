@@ -35,6 +35,11 @@ export default function HomeScreen() {
           </ThemedText>{' '}
           to open developer tools.
         </ThemedText>
+        <Link href="/camera">
+          <Link.Trigger>
+            <ThemedText type="defaultSemiBold">Open Camera</ThemedText>
+          </Link.Trigger>
+        </Link>
       </ThemedView>
       <ThemedView style={styles.stepContainer}>
         <Link href="/modal">
