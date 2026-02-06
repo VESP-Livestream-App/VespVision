@@ -22,6 +22,9 @@ import { addSnapshot } from '@/modules/snapshotStore';
 import { getBallSide, type BallSide } from '@/modules/ballDirection';
 import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
 import { sendTurnSignal } from '@/modules/bleClient';
+import { ControlLoop } from '@/modules/controlLoop';
+import { getBLEControlService } from '@/modules/bleControlService';
+import useBle from '@/app/hooks/use-ble';
 
 const base64ToUint8Array = (base64: string): Uint8Array => {
   const binaryString = global.atob(base64);
@@ -73,6 +76,17 @@ export default function CameraFullScreen() {
   const isLiveInferenceShared = useSharedValue(false);
   const lastLiveInferenceTime = useSharedValue(0);
   const isInferencingShared = useSharedValue(false);
+
+  // BLE integration for control loop
+  const {
+    connectedId,
+    currentPos,
+    sendAngleTime,
+  } = useBle();
+
+  // Control loop instance
+  const controlLoopRef = useRef<ControlLoop | null>(null);
+  const bleServiceRef = useRef(getBLEControlService());
 
   useEffect(() => {
     if (!hasPermission) {
@@ -155,7 +169,53 @@ export default function CameraFullScreen() {
     };
   }, []);
 
-  // Send turn signal via BLE when detections change
+  // Initialize control loop and BLE service
+  useEffect(() => {
+    // Initialize control loop with default config (matching Python)
+    controlLoopRef.current = new ControlLoop({
+      fieldOfView: 70,
+      controllerRate: 3,
+      servoSpeed: 60.0,
+      controllerGain: 25.0,
+      frameWidth: lastFrameSize.width || 640,
+      planeDegrees: 180,
+      edgeViewRedundancyFactor: 0.25,
+    });
+
+    // Initialize BLE service with sendAngleTime callback
+    bleServiceRef.current.initialize(async (deviceId, angle, timeMs) => {
+      await sendAngleTime(deviceId, angle, timeMs);
+    });
+
+    return () => {
+      // Cleanup
+      controlLoopRef.current?.reset();
+      bleServiceRef.current.reset();
+    };
+  }, [sendAngleTime]);
+
+  // Update BLE service when connection changes
+  useEffect(() => {
+    bleServiceRef.current.setConnectedDevice(connectedId);
+  }, [connectedId]);
+
+  // Update control loop frame width when it changes
+  useEffect(() => {
+    if (controlLoopRef.current && lastFrameSize.width > 0) {
+      // Recreate control loop with new frame width
+      controlLoopRef.current = new ControlLoop({
+        fieldOfView: 70,
+        controllerRate: 3,
+        servoSpeed: 60.0,
+        controllerGain: 25.0,
+        frameWidth: lastFrameSize.width,
+        planeDegrees: 180,
+        edgeViewRedundancyFactor: 0.25,
+      });
+    }
+  }, [lastFrameSize.width]);
+
+  // Send turn signal via BLE when detections change (legacy - can be removed if using control loop)
   useEffect(() => {
     if (lastFrameSize.width === 0) {
       return;
@@ -171,6 +231,31 @@ export default function CameraFullScreen() {
       console.error('❌ Failed to send turn signal via BLE:', error);
     });
   }, [detections, lastFrameSize.width]);
+
+  // Control loop: process detections and send servo commands
+  useEffect(() => {
+    if (!controlLoopRef.current || !bleServiceRef.current.isConnected()) {
+      return;
+    }
+
+    if (lastFrameSize.width === 0 || currentPos === null) {
+      return;
+    }
+
+    // Run control loop update
+    const command = controlLoopRef.current.update(
+      detections,
+      currentPos,
+      lastFrameSize.width
+    );
+
+    if (command) {
+      // Send command via BLE
+      bleServiceRef.current.sendCommand(command).catch((error) => {
+        console.error('❌ Failed to send control command via BLE:', error);
+      });
+    }
+  }, [detections, currentPos, lastFrameSize.width]);
 
   const handleInferenceOnJS = async (
     rgbData: number[],
