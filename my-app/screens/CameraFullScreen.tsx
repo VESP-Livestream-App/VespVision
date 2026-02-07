@@ -1,30 +1,30 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
-import { StyleSheet, View, ActivityIndicator, AppState, Pressable, Switch } from 'react-native';
-import { 
-  Camera, 
-  useCameraDevice, 
+import useBle from '@/app/hooks/use-ble';
+import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
+import { getBallSide, type BallSide } from '@/modules/ballDirection';
+import { sendTurnSignal } from '@/modules/bleClient';
+import { getBLEControlService } from '@/modules/bleControlService';
+import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
+import { ControlLoop } from '@/modules/controlLoop';
+import { addSnapshot } from '@/modules/snapshotStore';
+import { runYoloInference } from '@/modules/yoloInference';
+import { closeYoloModel, loadYoloModel } from '@/modules/yoloModel';
+import type { Detection } from '@/modules/yoloUtils';
+import { useFocusEffect } from '@react-navigation/native';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { useRouter } from 'expo-router';
+import * as ScreenOrientation from 'expo-screen-orientation';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Switch, View } from 'react-native';
+import {
+  Camera,
+  Frame,
+  useCameraDevice,
   useCameraPermission,
   useFrameProcessor,
-  Frame,
 } from 'react-native-vision-camera';
-import { createResizePlugin } from 'vision-camera-resize-plugin';
-import * as ScreenOrientation from 'expo-screen-orientation';
-import * as ImageManipulator from 'expo-image-manipulator';
-import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
-import { ThemedView } from '@/components/themed-view';
-import { ThemedText } from '@/components/themed-text';
-import { loadYoloModel, closeYoloModel } from '@/modules/yoloModel';
-import { runYoloInference } from '@/modules/yoloInference';
-import type { Detection } from '@/modules/yoloUtils';
 import { useRunOnJS, useSharedValue } from 'react-native-worklets-core';
-import { addSnapshot } from '@/modules/snapshotStore';
-import { getBallSide, type BallSide } from '@/modules/ballDirection';
-import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
-import { sendTurnSignal } from '@/modules/bleClient';
-import { ControlLoop } from '@/modules/controlLoop';
-import { getBLEControlService } from '@/modules/bleControlService';
-import useBle from '@/app/hooks/use-ble';
+import { createResizePlugin } from 'vision-camera-resize-plugin';
 
 const base64ToUint8Array = (base64: string): Uint8Array => {
   const binaryString = global.atob(base64);
@@ -253,7 +253,7 @@ export default function CameraFullScreen() {
         console.error('❌ Failed to send control command via BLE:', error);
       });
     }
-  }, [detections, currentPos, lastFrameSize.width]);
+  }, [detections]);
 
   const handleInferenceOnJS = async (
     rgbData: number[],
@@ -460,7 +460,7 @@ export default function CameraFullScreen() {
     // Handle live inference (throttled to 3 FPS = every 333ms)
     if (isLiveInferenceShared.value && !isInferencingShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = 1000 / 5; // 200ms for 5 FPS
+      const inferenceInterval = 5000; // 200ms for 5 FPS
       
       if (timeSinceLastInference >= inferenceInterval) {
         lastLiveInferenceTime.value = now;

@@ -8,7 +8,6 @@
  * to your microcontroller via BLE.
  */
 
-import type { TurnSignalData } from './bleTurnSignal';
 import { getBLEControlService } from './bleControlService';
 
 /**
@@ -27,32 +26,34 @@ import { getBLEControlService } from './bleControlService';
  * - { value: 0.50, hasBall: true }   → Ball detected on right side
  * - { value: 0.0, hasBall: false }   → No ball detected
  */
+let isWriting = false;
+
 export const sendTurnSignal = async (
   value: number,
   hasBall: boolean
 ): Promise<void> => {
-  console.log('📡 BLE: Sending turn signal', { value, hasBall });
-  
-  // Check if BLE service is connected
-  const bleService = getBLEControlService();
-  if (!bleService.isConnected()) {
-    console.warn('⚠️ BLE: No device connected, skipping turn signal');
+  if (isWriting) {
+    // Drop this packet if we are already writing
     return;
   }
+  
+  isWriting = true;
 
-  // For now, this is a no-op since the control loop handles servo commands
-  // If you need to implement a separate turn signal protocol, you can:
-  // 1. Add a sendTurnSignal method to BLEControlService
-  // 2. Use the BLE hook's sendAngleTime with converted values
-  // 3. Implement a custom BLE characteristic write here
-  
-  // Example: Convert turn signal to angle command (if needed)
-  // const centerAngle = 90; // Center position
-  // const maxOffset = 45; // Max offset from center
-  // const targetAngle = centerAngle + (value * maxOffset);
-  // await bleService.sendCommand({ angle: targetAngle, timeMs: 100 });
-  
-  console.log('✅ BLE: Turn signal logged (control loop handles actual servo commands)');
+  try {
+    // Check if BLE service is connected
+    const bleService = getBLEControlService();
+    if (!bleService.isConnected()) {
+      return;
+    }
+    
+    // We would send the command here
+    // await bleService.sendCommand(...)
+    
+  } catch (error) {
+    console.error('BLE Write Error:', error);
+  } finally {
+    isWriting = false;
+  }
 };
 
 /**

@@ -5,6 +5,9 @@ import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 import expo.modules.kotlin.Promise
 import org.tensorflow.lite.Interpreter
+// import org.tensorflow.lite.Delegate
+// import org.tensorflow.lite.gpu.CompatibilityList
+// import org.tensorflow.lite.gpu.GpuDelegate
 import java.io.FileInputStream
 import java.nio.channels.FileChannel
 import java.nio.ByteBuffer
@@ -12,6 +15,7 @@ import java.nio.ByteOrder
 
 class TFLiteModule : Module() {
   private var interpreter: Interpreter? = null
+  // private var gpuDelegate: GpuDelegate? = null
 
   override fun definition() = ModuleDefinition {
     Name("TFLiteModule")
@@ -26,7 +30,31 @@ class TFLiteModule : Module() {
         val declaredLength = fileDescriptor.declaredLength
         val buffer = fileChannel.map(FileChannel.MapMode.READ_ONLY, startOffset, declaredLength)
         
-        interpreter = Interpreter(buffer)
+        // Initialize Options
+        val options = Interpreter.Options()
+        
+        try {
+            // Attempt to use NNAPI for acceleration
+            // options.setUseNNAPI(true)
+            
+            /*
+            val compatList = CompatibilityList()
+            if (compatList.isDelegateSupportedOnThisDevice) {
+                val delegateOptions = compatList.bestOptionsForThisDevice
+                gpuDelegate = GpuDelegate(delegateOptions)
+                options.addDelegate(gpuDelegate as Delegate)
+            } else {
+                // Fallback to XNNPACK (enabled by default)
+            }
+            */
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+        
+        // Set number of threads for CPU fallback
+        options.setNumThreads(4)
+
+        interpreter = Interpreter(buffer, options)
         interpreter?.allocateTensors()
         promise.resolve(true)
       } catch (e: Exception) {
@@ -34,7 +62,8 @@ class TFLiteModule : Module() {
       }
     }
 
-    AsyncFunction("runInference") { inputArray: List<Double>, inputShape: List<Int>, promise: Promise ->
+    // Changed to accept ByteArray directly to support Uint8 input
+    AsyncFunction("runInference") { byteInput: ByteArray, inputShape: List<Int>, promise: Promise ->
       val interpreter = interpreter
       if (interpreter == null) {
         promise.reject("MODEL_NOT_LOADED", "Model not loaded. Call loadModel first.", null)
@@ -42,23 +71,67 @@ class TFLiteModule : Module() {
       }
 
       try {
-        val floatInput = FloatArray(inputArray.size) { inputArray[it].toFloat() }
-        val inputBuffer = ByteBuffer.allocateDirect(floatInput.size * 4).order(ByteOrder.nativeOrder())
-        floatInput.forEach { inputBuffer.putFloat(it) }
+        val inputTensor = interpreter.getInputTensor(0)
+        val inputDataType = inputTensor.dataType()
+        
+        android.util.Log.d("TFLiteModule", "Input Tensor: Type=$inputDataType, Bytes=${inputTensor.numBytes()}")
+
+        val inputBytesNeeded = byteInput.size 
+        
+        val inputBuffer: ByteBuffer
+
+        if (inputDataType == org.tensorflow.lite.DataType.FLOAT32 && inputTensor.numBytes() == inputBytesNeeded * 4) {
+             // Case: Model expects Float32, but we provided generic Byte input. 
+             // We convert Bytes [0, 255] -> Float32 [0.0, 1.0]
+             inputBuffer = ByteBuffer.allocateDirect(inputTensor.numBytes()).order(ByteOrder.nativeOrder())
+             val floatView = inputBuffer.asFloatBuffer()
+             for (b in byteInput) {
+                 floatView.put((b.toInt() and 0xFF) / 255.0f)
+             }
+        } else if (inputTensor.numBytes() == inputBytesNeeded) {
+             // Case: Exact match (e.g. Uint8 -> Uint8)
+             inputBuffer = ByteBuffer.allocateDirect(inputBytesNeeded).order(ByteOrder.nativeOrder())
+             inputBuffer.put(byteInput)
+        } else {
+             promise.reject("INPUT_SIZE_MISMATCH", "Model expects ${inputTensor.numBytes()} bytes but input has $inputBytesNeeded bytes. Check input shape/type.", null)
+             return@AsyncFunction
+        }
         
         val outputTensor = interpreter.getOutputTensor(0)
-        val outputShape = outputTensor.shape() 
-        var outputSize = 1
-        for (dim in outputShape) outputSize *= dim
+        val outputBytesNeeded = outputTensor.numBytes()
         
-        val outputBuffer = ByteBuffer.allocateDirect(outputSize * 4).order(ByteOrder.nativeOrder())
+        android.util.Log.d("TFLiteModule", "Output Tensor: Type=${outputTensor.dataType()}, Bytes=$outputBytesNeeded")
+
+        val outputBuffer = ByteBuffer.allocateDirect(outputBytesNeeded).order(ByteOrder.nativeOrder())
         
         interpreter.run(inputBuffer, outputBuffer)
         
         outputBuffer.rewind()
+        
         val result = ArrayList<Double>()
-        while (outputBuffer.hasRemaining()) {
-            result.add(outputBuffer.float.toDouble())
+        if (outputTensor.dataType() == org.tensorflow.lite.DataType.FLOAT32) {
+             val floatOut = outputBuffer.asFloatBuffer()
+             val numFloats = outputBytesNeeded / 4
+             for (i in 0 until numFloats) {
+                 result.add(floatOut.get(i).toDouble())
+             }
+        } else if (outputTensor.dataType() == org.tensorflow.lite.DataType.UINT8) {
+             // Handle quantized output if needed
+             for (i in 0 until outputBytesNeeded) {
+                 result.add((outputBuffer.get(i).toInt() and 0xFF).toDouble())
+             }
+        } else {
+             // Attempt generic float read
+             try {
+                val floatOut = outputBuffer.asFloatBuffer()
+                val numFloats = outputBytesNeeded / 4
+                for (i in 0 until numFloats) {
+                    result.add(floatOut.get(i).toDouble())
+                }
+             } catch (e: Exception) {
+                 promise.reject("UNSUPPORTED_OUTPUT_TYPE", "Output type ${outputTensor.dataType()} not yet supported", null)
+                 return@AsyncFunction
+             }
         }
         
         promise.resolve(result)
@@ -68,6 +141,8 @@ class TFLiteModule : Module() {
     }
 
     AsyncFunction("close") { promise: Promise ->
+      // gpuDelegate?.close()
+      // gpuDelegate = null
       interpreter?.close()
       interpreter = null
       promise.resolve(null)

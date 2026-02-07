@@ -7,9 +7,9 @@
  * Translates the Python main() control loop to TypeScript.
  */
 
-import type { Detection } from './yoloUtils';
 import { Servo } from './servoController';
 import { SimpleController } from './simpleController';
+import type { Detection } from './yoloUtils';
 
 export interface ControlLoopConfig {
   fieldOfView?: number;        // Camera field of view in degrees (default: 70)
@@ -39,7 +39,7 @@ export class ControlLoop {
   private readonly controller: SimpleController;
   
   private state: ControlLoopState = {
-    isTracking: false,
+    isTracking: true,
     isSearching: false,
     lastError: null,
     normalizedError: null,
@@ -140,13 +140,15 @@ export class ControlLoop {
     const ballDetection = detections.find(
       (det) => {
         const label = String(det.className ?? det.class).toLowerCase();
-        return BALL_LABELS.includes(label);
+        // Use det.score if present, otherwise assume 1.0 (for backward compatibility)
+        const score = (det as any)?.score ?? 1.0;
+        return BALL_LABELS.includes(label) && score >= 0.5;
       }
     );
     
     // Update servo search mode if needed
     if (this.servo.isSearching) {
-      this.servo.updateSearch(currentServoPos, this.fieldOfView);
+      this.servo.updateSearch(currentServoPos, this.fieldOfView, this.edgeRedundancyFactor);
     }
     
     // If no ball detected, enter search mode

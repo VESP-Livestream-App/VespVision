@@ -1,5 +1,6 @@
+import { startTimer, withProfiling } from '@/lib/profiler';
 import { TFLite, isTFLiteAvailable } from '@/modules/TFLiteModule';
-import { getYOLOInputShape, normalizeInput, parseYOLOOutput, type Detection } from '@/modules/yoloUtils';
+import { getYOLOInputShape, parseYOLOOutput, type Detection } from '@/modules/yoloUtils';
 
 type PreprocessOptions = {
   normalize?: boolean;
@@ -14,10 +15,10 @@ let hasLoggedOutputStats = false;
 
 type OutputLayout = 'predMajor' | 'classMajor';
 
-const preprocessRgb = (rgbData: ArrayLike<number>, options: PreprocessOptions): number[] => {
-  const normalize = options.normalize ?? true;
+const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): Uint8Array => {
+  const normalize = options.normalize ?? false; // Force false for Uint8 default
   const rgbOrder = options.rgbOrder ?? true;
-  const out: number[] = new Array(rgbData.length);
+  const out = new Uint8Array(rgbData.length);
   let min = 255;
   let max = 0;
 
@@ -28,9 +29,11 @@ const preprocessRgb = (rgbData: ArrayLike<number>, options: PreprocessOptions): 
     const rOut = rgbOrder ? r : b;
     const bOut = rgbOrder ? b : r;
     const gOut = g;
-    out[i] = normalize ? rOut / 255.0 : rOut;
-    out[i + 1] = normalize ? gOut / 255.0 : gOut;
-    out[i + 2] = normalize ? bOut / 255.0 : bOut;
+    // For Uint8, we usually don't divide by 255. Keep 0-255 range.
+    out[i] = rOut;
+    out[i + 1] = gOut;
+    out[i + 2] = bOut;
+    
     if (rOut < min) min = rOut;
     if (gOut < min) min = gOut;
     if (bOut < min) min = bOut;
@@ -51,7 +54,7 @@ const preprocessRgb = (rgbData: ArrayLike<number>, options: PreprocessOptions): 
   }
 
   return out;
-};
+});
 
 export const runYoloInference = async (
   rgbData: ArrayLike<number>,
@@ -69,8 +72,11 @@ export const runYoloInference = async (
 
   // YOLO input shape [1, 640, 640, 3]
   const inputShape = getYOLOInputShape();
-
+  
+  const endInferenceTimer = startTimer('TFLite.runInference');
   const output = await TFLite.runInference(normalizedInput, inputShape);
+  endInferenceTimer();
+  
   if (!output) {
     console.warn('TFLite returned no output');
     return [];

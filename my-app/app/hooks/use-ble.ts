@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
-import { Platform, Alert } from 'react-native';
-import { BleManager, Device } from 'react-native-ble-plx';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { request, PERMISSIONS, RESULTS } from 'react-native-permissions';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Alert, Platform } from 'react-native';
+import { BleManager, Device } from 'react-native-ble-plx';
+import { PERMISSIONS, request, RESULTS } from 'react-native-permissions';
 import { base64FromBytes, base64ToBytes } from '../../lib/base64';
+
+// Use lazy initialization or null for Web to prevent crashes
+const bleManager = new BleManager();
 
 const TARGET_SERVICE_UUID = '499d163b-be72-4691-a8af-61657909ac11';
 const TARGET_CHARACTERISTIC_UUID = 'b793f920-016e-49ea-a4fd-15fe1d21a1a5';
@@ -21,12 +24,6 @@ export default function useBle() {
   const currentPosRef = useRef<number | null>(null);
   useEffect(() => { currentPosRef.current = currentPos; }, [currentPos]);
 
-  const managerRef = useRef<BleManager | null>(new BleManager());
-  function getManager() {
-    if (!managerRef.current) managerRef.current = new BleManager();
-    return managerRef.current;
-  }
-
   const stateSubRef = useRef<any>(null);
   const charSubRef = useRef<any>(null);
   const posPollRef = useRef<number | null>(null);
@@ -37,7 +34,7 @@ export default function useBle() {
     let mounted = true;
     (async () => {
       try {
-        const mgr = getManager();
+        const mgr = bleManager;
         const connected = await mgr.connectedDevices(TARGET_SERVICE_UUID ? [TARGET_SERVICE_UUID] : []);
         if (!mounted) return;
         if (connected && connected.length > 0) {
@@ -72,7 +69,7 @@ export default function useBle() {
     return () => {
       mounted = false;
       try {
-        managerRef.current?.stopDeviceScan();
+        bleManager.stopDeviceScan();
         if (stateSubRef.current?.remove) stateSubRef.current.remove();
         if (charSubRef.current?.remove) charSubRef.current.remove();
         if (posPollRef.current != null) {
@@ -83,8 +80,7 @@ export default function useBle() {
           clearInterval(heartbeatRef.current as unknown as number);
           heartbeatRef.current = null;
         }
-        managerRef.current?.destroy();
-        managerRef.current = null;
+        // bleManager is global, do not destroy
       } catch (e) {
         // ignore
       }
@@ -144,45 +140,82 @@ export default function useBle() {
   }
 
   async function startScan() {
+    console.log('startScan called');
     const ok = await requestPermissions();
-    if (!ok) return;
+    if (!ok) { console.log('startScan: perms denied'); return; }
+    
+    // Reset devices
     setDevices([]);
     setScanning(true);
-    const mgr = getManager();
-    stateSubRef.current = mgr.onStateChange((state) => {
-      if (state === 'PoweredOn') {
-        if (stateSubRef.current?.remove) stateSubRef.current.remove();
-        stateSubRef.current = null;
-        try {
+    
+    const mgr = bleManager;
+    
+    // Ensure any previous scan is stopped before starting a new one
+    try { mgr.stopDeviceScan(); } catch (e) {}
+    if (stateSubRef.current?.remove) { stateSubRef.current.remove(); stateSubRef.current = null; }
+
+    const performScan = () => {
+       console.log('startScan: starting device scan');
+       try {
           const serviceFilter = TARGET_SERVICE_UUID ? [TARGET_SERVICE_UUID] : null;
           mgr.startDeviceScan(serviceFilter, { allowDuplicates: false }, (error, device) => {
-            if (error) { console.warn('Scan error', error); Alert.alert('Scan error', error.message ?? String(error)); setScanning(false); return; }
-            if (!device) return;
-            setDevices((prev) => {
-              const idx = prev.findIndex((d) => d.id === device.id);
-              if (idx === -1) return [...prev, device];
-              const copy = prev.slice(); copy[idx] = device; return copy;
-            });
+            if (error) { 
+               console.warn('Scan callback error', error); 
+               // Only alert if we are supposed to be scanning
+               setScanning((s) => {
+                 if (s) Alert.alert('Scan error', error.message ?? String(error)); 
+                 return false;
+               });
+               return; 
+            }
+            if (device) {
+               // console.log('scanned device:', device.id, device.name);
+               setDevices((prev) => {
+                 const idx = prev.findIndex((d) => d.id === device.id);
+                 if (idx === -1) return [...prev, device];
+                 const copy = prev.slice(); copy[idx] = device; return copy;
+               });
+            }
           });
-        } catch (e: any) { console.warn('startDeviceScan threw', e); Alert.alert('Scan failed', String(e?.message ?? e)); setScanning(false); }
-      }
-    }, true);
+       } catch (e: any) { 
+          console.warn('startDeviceScan threw', e); 
+          Alert.alert('Scan failed', String(e?.message ?? e)); 
+          setScanning(false); 
+       }
+    };
+
+    const state = await mgr.state();
+    console.log('startScan: current BLE state', state);
+    if (state === 'PoweredOn') {
+      performScan();
+    } else {
+      console.log('startScan: waiting for PoweredOn');
+      const sub = mgr.onStateChange((s) => {
+        console.log('startScan: state changed to', s);
+        if (s === 'PoweredOn') {
+          sub.remove();
+          stateSubRef.current = null;
+          performScan();
+        }
+      }, true);
+      stateSubRef.current = sub;
+    }
   }
 
   function stopScan() {
-    try { managerRef.current?.stopDeviceScan(); if (stateSubRef.current?.remove) { stateSubRef.current.remove(); stateSubRef.current = null; } } catch (e) { }
+    try { bleManager.stopDeviceScan(); if (stateSubRef.current?.remove) { stateSubRef.current.remove(); stateSubRef.current = null; } } catch (e) { }
     setScanning(false);
   }
 
   async function connectToDevice(device: Device) {
     try {
       setConnectingId(device.id);
-      try { managerRef.current?.stopDeviceScan(); } catch {}
-      const connected = await getManager().connectToDevice(device.id);
+      try { bleManager.stopDeviceScan(); } catch {}
+      const connected = await bleManager.connectToDevice(device.id);
       await connected.discoverAllServicesAndCharacteristics();
       setCurrentPosLoading(true);
       try {
-        const ch = await getManager().readCharacteristicForDevice(device.id, TARGET_SERVICE_UUID, CURRENT_POS_UUID);
+        const ch = await bleManager.readCharacteristicForDevice(device.id, TARGET_SERVICE_UUID, CURRENT_POS_UUID);
         if (ch?.value) {
           const bytes = base64ToBytes(ch.value);
           if (bytes.length >= 4) {
@@ -196,18 +229,8 @@ export default function useBle() {
       ensureDeviceInList(connected);
       setConnectedId(device.id);
       try {
-        try {
-          if ((connected as any).monitorCharacteristicForService) {
-            const sub = (connected as any).monitorCharacteristicForService(TARGET_SERVICE_UUID, CURRENT_POS_UUID, (err: any, characteristic: any) => {
-              if (err) { try { console.warn('device-level monitor error (full):', JSON.stringify(err, Object.getOwnPropertyNames(err))); } catch (j) { console.warn('device-level monitor error', err); } console.warn('device-level monitor error.reason', err?.reason, 'errorCode', err?.errorCode, 'description', err?.description); startCurrentPosMonitor(device.id); return; }
-              if (!characteristic?.value) return;
-              const bytes = base64ToBytes(characteristic.value);
-              if (bytes.length >= 4) { const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const val = dv.getUint32(0, true); setCurrentPos(val); setCurrentPosLoading(false); }
-            });
-            if (sub) { charSubRef.current = sub; } else { startCurrentPosMonitor(device.id); }
-          } else { startCurrentPosMonitor(device.id); }
-        } catch (e) { console.warn('device-level monitor threw', e); startCurrentPosMonitor(device.id); }
-      } catch (e) { console.warn('startCurrentPosMonitor failed', e); }
+        startCurrentPosMonitor(device.id); 
+      } catch (e) { console.warn('startCurrentPosMonitor failed warning', e); }
       try { await AsyncStorage.setItem(STORAGE_KEY, device.id); } catch (e) { console.warn('persist connected id failed', e); }
       Alert.alert('Connected', `Connected to ${device.name ?? device.id}`);
     } catch (err: any) { console.warn('connect error', err); Alert.alert('Connection failed', String(err?.message ?? err)); }
@@ -217,7 +240,7 @@ export default function useBle() {
   async function disconnectDevice(deviceId: string) {
     setConnectingId(deviceId);
     try {
-      await getManager().cancelDeviceConnection(deviceId);
+      await bleManager.cancelDeviceConnection(deviceId);
       setConnectedId((prev) => (prev === deviceId ? null : prev));
       try {
         const cur = await AsyncStorage.getItem(STORAGE_KEY);
@@ -236,7 +259,7 @@ export default function useBle() {
   }
 
   async function isDeviceConnectedById(deviceId: string) {
-    try { return await getManager().isDeviceConnected(deviceId); } catch (e) { console.warn('isDeviceConnected error', e); return false; }
+    try { return await bleManager.isDeviceConnected(deviceId); } catch (e) { console.warn('isDeviceConnected error', e); return false; }
   }
 
   function ensureDeviceInList(device: Device) {
@@ -261,10 +284,7 @@ export default function useBle() {
       dv.setUint32(4, timeMs >>> 0, true);
       const bytes = new Uint8Array(buf);
       const b64 = base64FromBytes(bytes);
-      const mgr = managerRef.current;
-      if (mgr) {
-        await mgr.writeCharacteristicWithResponseForDevice(deviceId, TARGET_SERVICE_UUID, TARGET_CHARACTERISTIC_UUID, b64);
-      }
+      await bleManager.writeCharacteristicWithResponseForDevice(deviceId, TARGET_SERVICE_UUID, TARGET_CHARACTERISTIC_UUID, b64);
     } catch (err: any) { console.warn('write error', err); }
   }, []);
 
@@ -283,7 +303,7 @@ export default function useBle() {
       }
 
       try {
-        const ch = await getManager().readCharacteristicForDevice(deviceId, TARGET_SERVICE_UUID, CURRENT_POS_UUID);
+        const ch = await bleManager.readCharacteristicForDevice(deviceId, TARGET_SERVICE_UUID, CURRENT_POS_UUID);
         if (ch?.value) {
           const bytes = base64ToBytes(ch.value);
           if (bytes.length >= 4) {
@@ -307,7 +327,16 @@ export default function useBle() {
   }
 
   function stopCurrentPosMonitor() {
-    try { if (charSubRef.current?.remove) { charSubRef.current.remove(); charSubRef.current = null; } } catch (e) { }
+    try { 
+      if (charSubRef.current) {
+        // Prevent double removal or null pointer issues
+        const sub = charSubRef.current;
+        charSubRef.current = null;
+        if (sub.remove) sub.remove(); 
+      }
+    } catch (e) { 
+      console.warn('stopCurrentPosMonitor remove failed', e);
+    }
     if (posPollRef.current != null) { clearInterval(posPollRef.current as unknown as number); posPollRef.current = null; }
     setCurrentPos(null);
     setCurrentPosLoading(false);
@@ -317,7 +346,7 @@ export default function useBle() {
     stopCurrentPosMonitor();
     try {
       setCurrentPosLoading(true);
-      charSubRef.current = getManager().monitorCharacteristicForDevice(deviceId, TARGET_SERVICE_UUID, CURRENT_POS_UUID, (error, characteristic) => {
+      charSubRef.current = bleManager.monitorCharacteristicForDevice(deviceId, TARGET_SERVICE_UUID, CURRENT_POS_UUID, (error, characteristic) => {
         if (error) { try { console.warn('monitor characteristic error (full):', JSON.stringify(error, Object.getOwnPropertyNames(error))); } catch (j) { console.warn('monitor characteristic error', error); } console.warn('monitor error.reason', error?.reason, 'errorCode', error?.errorCode, 'description', error?.description); startPosPolling(deviceId); return; }
         if (!characteristic?.value) return;
         const bytes = base64ToBytes(characteristic.value);

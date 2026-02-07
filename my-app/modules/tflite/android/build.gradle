@@ -17,4 +17,5 @@ dependencies {
   implementation project(':expo-modules-core')
   implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${project.findProperty('kotlinVersion') ?: '1.9.22'}"
   implementation 'org.tensorflow:tensorflow-lite:2.14.0'
+  implementation 'org.tensorflow:tensorflow-lite-gpu:2.14.0'
 }

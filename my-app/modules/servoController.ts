@@ -75,13 +75,13 @@ export class Servo {
     edgeRedundancyFactor: number = 0.25
   ): void {
     this.searching = true;
-    
+
     // Calculate start angle based on direction
     // Left-to-right: start near left edge
     // Right-to-left: start near right edge
     const startAngle = direction > 0
-      ? this.minPos + fieldOfView * edgeRedundancyFactor
-      : this.maxPos - fieldOfView * edgeRedundancyFactor;
+      ? this.minPos + Math.floor(fieldOfView * edgeRedundancyFactor)
+      : this.maxPos - Math.floor(fieldOfView * edgeRedundancyFactor);
     
     this._targetPos = Math.max(this.minPos, Math.min(this.maxPos, startAngle));
   }
@@ -92,12 +92,12 @@ export class Servo {
    * @param currentPos - Current actual position from BLE
    * @param fieldOfView - Field of view in degrees
    */
-  updateSearch(currentPos: number, fieldOfView: number): void {
+  updateSearch(currentPos: number, fieldOfView: number, edgeRedundancyFactor: number = 0.25): void {
     if (!this.searching) {
       return;
     }
 
-    const fovQuarter = fieldOfView / 4;
+    const fovQuarter = Math.floor(fieldOfView * edgeRedundancyFactor);
     
     // If reached left edge, move to right edge
     if (currentPos <= this.minPos + fovQuarter) {
