@@ -13,7 +13,6 @@ import { SimpleController } from './simpleController';
 
 export interface ControlLoopConfig {
   fieldOfView?: number;        // Camera field of view in degrees (default: 70)
-  controllerRate?: number;      // Control loop frequency in Hz (default: 3)
   servoSpeed?: number;          // Servo speed in degrees/second (default: 60)
   controllerGain?: number;      // Controller gain factor (default: 25.0)
   frameWidth?: number;          // Camera frame width in pixels (default: 640)
@@ -32,7 +31,6 @@ export interface ControlLoopState {
 
 export class ControlLoop {
   private readonly fieldOfView: number;
-  private readonly controllerRate: number;
   private readonly frameWidth: number;
   private readonly planeDegrees: number;
   private readonly edgeRedundancyFactor: number;
@@ -55,7 +53,6 @@ export class ControlLoop {
   constructor(config: ControlLoopConfig = {}) {
     const {
       fieldOfView = 70,
-      controllerRate = 3,
       servoSpeed = 60.0,
       controllerGain = 25.0,
       frameWidth = 640,
@@ -64,12 +61,10 @@ export class ControlLoop {
     } = config;
 
     this.fieldOfView = fieldOfView;
-    this.controllerRate = controllerRate;
     this.frameWidth = frameWidth;
     this.planeDegrees = planeDegrees;
     this.edgeRedundancyFactor = edgeViewRedundancyFactor;
     
-    this.intervalMs = 1000 / controllerRate;
     
     this.servo = new Servo({
       initialPos: 90.0,
@@ -104,21 +99,6 @@ export class ControlLoop {
   }
 
   /**
-   * Check if target is visible in current FOV
-   * 
-   * @param targetAngle - Target angle in degrees
-   * @param servoPos - Current servo position in degrees
-   * @returns True if target is within FOV
-   */
-  isTargetVisible(targetAngle: number, servoPos: number): boolean {
-    const halfFov = this.fieldOfView / 2;
-    const minVisible = servoPos - halfFov;
-    const maxVisible = servoPos + halfFov;
-    
-    return targetAngle >= minVisible && targetAngle <= maxVisible;
-  }
-
-  /**
    * Get visible window indices (for debugging/compatibility with Python)
    * 
    * @param servoPos - Current servo position in degrees
@@ -148,13 +128,6 @@ export class ControlLoop {
   ): { angle: number; timeMs: number } | null {
     const now = Date.now();
     const elapsed = now - this.lastControlTime;
-    
-    // Rate limit: only run at controllerRate frequency
-    if (elapsed < this.intervalMs) {
-      // Silently skip - rate limiting (uncomment for verbose logging)
-      // console.log(`⏱️ [Control] Rate limited (${elapsed.toFixed(0)}ms < ${this.intervalMs.toFixed(0)}ms)`);
-      return null;
-    }
     
     this.lastControlTime = now;
     console.log(`\n🔄 [Control] Update cycle (${elapsed.toFixed(0)}ms since last)`);
@@ -226,36 +199,8 @@ export class ControlLoop {
     console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
     
     // Check if target is visible
-    const isVisible = this.isTargetVisible(targetAngle, currentServoPos);
     const visibleWindow = this.getVisibleWindow(currentServoPos);
     console.log(`   Visible window: [${visibleWindow.min.toFixed(2)}°, ${visibleWindow.max.toFixed(2)}°]`);
-    console.log(`   Target visible: ${isVisible ? 'YES' : 'NO'}`);
-    
-    if (!isVisible) {
-      // Target not in FOV - enter search mode
-      if (this.state.isTracking) {
-        console.log('🎯 [Control] Target out of FOV - entering search mode');
-        this.state.isTracking = false;
-        this.state.isSearching = true;
-        
-        // Determine search direction
-        const errorDegrees = targetAngle - currentServoPos;
-        const searchDirection = errorDegrees < 0 ? 1 : -1;
-        this.servo.searchTarget(searchDirection, this.fieldOfView, this.edgeRedundancyFactor);
-        
-        this.state.targetAngle = this.servo.targetPos;
-        const timeMs = this.servo.getTimeToTarget(currentServoPos);
-        
-        console.log(`   Error: ${errorDegrees.toFixed(2)}°`);
-        console.log(`   Search direction: ${searchDirection > 0 ? 'left-to-right' : 'right-to-left'}`);
-        console.log(`   Target angle: ${this.servo.targetPos.toFixed(2)}°`);
-        console.log(`   Time to move: ${timeMs}ms`);
-        
-        return { angle: this.servo.targetPos, timeMs };
-      }
-      
-      return null;
-    }
     
     // Target is visible - track it
     if (this.state.isSearching || !this.state.isTracking) {
@@ -272,10 +217,8 @@ export class ControlLoop {
     const errorDegrees = targetAngle - currentServoPos;
     this.state.lastError = errorDegrees;
     
-    // Normalize error to [-1.0, 1.0] range based on half-FOV
-    // If error is +35 degrees (half FOV), normalized error is 1.0
-    const halfFov = this.fieldOfView / 2;
-    const normalizedError = errorDegrees / halfFov;
+    // Normalize error to [-1.0, 1.0] range based on plane dimensions
+    const normalizedError = errorDegrees / this.planeDegrees;
     this.state.normalizedError = normalizedError;
     
     // Compute control signal

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 import { Platform, Alert } from 'react-native';
 import { BleManager, Device } from 'react-native-ble-plx';
 import AsyncStorage from '@react-native-async-storage/async-storage';
@@ -17,6 +17,9 @@ export default function useBle() {
   const [connectedId, setConnectedId] = useState<string | null>(null);
   const [currentPos, setCurrentPos] = useState<number | null>(null);
   const [currentPosLoading, setCurrentPosLoading] = useState(false);
+
+  const currentPosRef = useRef<number | null>(null);
+  useEffect(() => { currentPosRef.current = currentPos; }, [currentPos]);
 
   const managerRef = useRef<BleManager | null>(new BleManager());
   function getManager() {
@@ -240,19 +243,30 @@ export default function useBle() {
     setDevices((prev) => (prev.find((d) => d.id === device.id) ? prev : [...prev, device]));
   }
 
-  async function sendAngleTime(deviceId: string, angle: number, timeMs: number) {
-    if (!Number.isFinite(angle) || !Number.isFinite(timeMs)) { Alert.alert('Invalid input', 'Angle and time must be numbers'); return; }
+  const sendAngleTime = useCallback(async (deviceId: string, angle: number, timeMs: number) => {
+    if (!Number.isFinite(angle) || !Number.isFinite(timeMs)) { 
+      console.warn('Invalid input', 'Angle and time must be numbers'); 
+      return; 
+    }
+    const pos = currentPosRef.current;
+    if (pos === null) {
+      console.warn('Current position unknown', 'Cannot send command because current position is unknown');
+      return;
+    }
     try {
+      const deltaAngle = angle - pos;
       const buf = new ArrayBuffer(8);
       const dv = new DataView(buf);
-      dv.setUint32(0, angle >>> 0, true);
+      dv.setUint32(0, deltaAngle >>> 0, true);
       dv.setUint32(4, timeMs >>> 0, true);
       const bytes = new Uint8Array(buf);
       const b64 = base64FromBytes(bytes);
-      await getManager().writeCharacteristicWithResponseForDevice(deviceId, TARGET_SERVICE_UUID, TARGET_CHARACTERISTIC_UUID, b64);
-      Alert.alert('Write successful', `Wrote angle=${angle}, time=${timeMs}ms`);
-    } catch (err: any) { console.warn('write error', err); Alert.alert('Write failed', String(err?.message ?? err)); }
-  }
+      const mgr = managerRef.current;
+      if (mgr) {
+        await mgr.writeCharacteristicWithResponseForDevice(deviceId, TARGET_SERVICE_UUID, TARGET_CHARACTERISTIC_UUID, b64);
+      }
+    } catch (err: any) { console.warn('write error', err); }
+  }, []);
 
   function startPosPolling(deviceId: string) {
     if (posPollRef.current != null) return;

@@ -171,10 +171,9 @@ export default function CameraFullScreen() {
 
   // Initialize control loop and BLE service
   useEffect(() => {
-    // Initialize control loop with default config (matching Python)
+    // Initialize control loop with default config 
     controlLoopRef.current = new ControlLoop({
       fieldOfView: 70,
-      controllerRate: 3,
       servoSpeed: 60.0,
       controllerGain: 25.0,
       frameWidth: lastFrameSize.width || 640,
@@ -205,7 +204,6 @@ export default function CameraFullScreen() {
       // Recreate control loop with new frame width
       controlLoopRef.current = new ControlLoop({
         fieldOfView: 70,
-        controllerRate: 3,
         servoSpeed: 60.0,
         controllerGain: 25.0,
         frameWidth: lastFrameSize.width,
