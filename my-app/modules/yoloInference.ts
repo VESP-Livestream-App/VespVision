@@ -15,10 +15,11 @@ let hasLoggedOutputStats = false;
 
 type OutputLayout = 'predMajor' | 'classMajor';
 
-const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): Uint8Array => {
-  const normalize = options.normalize ?? false; // Force false for Uint8 default
+const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): number[] => {
+  // Working version: normalize to 0-1 range for Float32
+  const normalize = options.normalize ?? true;
   const rgbOrder = options.rgbOrder ?? true;
-  const out = new Uint8Array(rgbData.length);
+  const out: number[] = new Array(rgbData.length);
   let min = 255;
   let max = 0;
 
@@ -29,10 +30,10 @@ const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>
     const rOut = rgbOrder ? r : b;
     const bOut = rgbOrder ? b : r;
     const gOut = g;
-    // For Uint8, we usually don't divide by 255. Keep 0-255 range.
-    out[i] = rOut;
-    out[i + 1] = gOut;
-    out[i + 2] = bOut;
+    // Normalize to 0-1 range (working version)
+    out[i] = normalize ? rOut / 255.0 : rOut;
+    out[i + 1] = normalize ? gOut / 255.0 : gOut;
+    out[i + 2] = normalize ? bOut / 255.0 : bOut;
     
     if (rOut < min) min = rOut;
     if (gOut < min) min = gOut;
@@ -86,7 +87,7 @@ export const runYoloInference = async (
   logOutputStats(normalizedOutput);
   return parseYOLOOutput(normalizedOutput, frameWidth, frameHeight, {
     inputSize: 640,
-    numClasses: 80,
+    numClasses: 2, // basketball and rim
     confidenceThreshold: 0.25,
     nmsThreshold: 0.4,
     applySigmoid: options.applySigmoid ?? false,

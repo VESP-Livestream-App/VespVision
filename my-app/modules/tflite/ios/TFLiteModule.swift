@@ -33,6 +33,8 @@ public class TFLiteModule: Module {
         }
 
         do {
+          // Always treat as Float32 (working version)
+          // TensorFlow Lite handles INT8 internally and exposes Float32
           let floatData = inputArray.map { Float($0) }
           let bufferSize = inputShape.reduce(1, *)
           let inputBuffer = Data(bytes: floatData, count: bufferSize * MemoryLayout<Float>.size)
