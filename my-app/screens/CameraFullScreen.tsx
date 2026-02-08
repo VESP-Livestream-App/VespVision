@@ -19,9 +19,10 @@ import { runYoloInference } from '@/modules/yoloInference';
 import type { Detection } from '@/modules/yoloUtils';
 import { useRunOnJS, useSharedValue } from 'react-native-worklets-core';
 import { addSnapshot } from '@/modules/snapshotStore';
-import { getBallSide, type BallSide } from '@/modules/ballDirection';
+import { getBallSide, getBallSideFromCenterX, type BallSide } from '@/modules/ballDirection';
 import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
 import { sendTurnSignal } from '@/modules/bleClient';
+import { ByteTrackLite, type Det, type Track } from '@/src/tracking/byteTrackLite';
 
 const base64ToUint8Array = (base64: string): Uint8Array => {
   const binaryString = global.atob(base64);
@@ -46,6 +47,54 @@ const decodeJpegToRgb = (base64Jpeg: string): Uint8Array => {
     rgb[j++] = data[i + 2]; // B
   }
   return rgb;
+};
+
+const nowMs = (): number => (
+  typeof global !== 'undefined' && (global as { performance?: { now?: () => number } }).performance?.now
+    ? (global as { performance: { now: () => number } }).performance.now()
+    : Date.now()
+);
+
+const INPUT_SIZE = 640;
+const LIVE_INFERENCE_FPS = 10;
+const ENABLE_LIVE_LOGS = false;
+const ENABLE_TIMING_LOGS = true;
+const LIVE_LOG_EVERY = 30;
+const BASKETBALL_LABEL = 'basketball';
+
+const detectionToDet = (det: Detection): Det => ({
+  x1: det.x,
+  y1: det.y,
+  x2: det.x + det.width,
+  y2: det.y + det.height,
+  score: det.confidence,
+});
+
+const trackToDetection = (track: Track): Detection => ({
+  x: track.x1,
+  y: track.y1,
+  width: Math.max(1, track.x2 - track.x1),
+  height: Math.max(1, track.y2 - track.y1),
+  confidence: track.score,
+  class: 0,
+  className: BASKETBALL_LABEL,
+});
+
+const getBestTrack = (tracks: Track[]): Track | null => {
+  if (tracks.length === 0) {
+    return null;
+  }
+  let best: Track | null = null;
+  for (let i = 0; i < tracks.length; i += 1) {
+    const t = tracks[i];
+    if (t.lost !== 0) {
+      continue;
+    }
+    if (!best || t.score > best.score) {
+      best = t;
+    }
+  }
+  return best ?? tracks[0];
 };
 
 export default function CameraFullScreen() {
@@ -73,6 +122,10 @@ export default function CameraFullScreen() {
   const isLiveInferenceShared = useSharedValue(false);
   const lastLiveInferenceTime = useSharedValue(0);
   const isInferencingShared = useSharedValue(false);
+  const lastLiveDetectionAtRef = useRef<number | null>(null);
+  const liveLogCounterRef = useRef(0);
+  const lastInferenceStartRef = useRef<number | null>(null);
+  const trackerRef = useRef(new ByteTrackLite(0.35, 0.3, 25, 0.6));
 
   useEffect(() => {
     if (!hasPermission) {
@@ -180,7 +233,8 @@ export default function CameraFullScreen() {
     resizedHeight: number,
     padX: number,
     padY: number,
-    scale: number
+    scale: number,
+    isLiveMode: boolean
   ) => {
     if (!isModelLoaded || isInferencing) {
       isInferencingShared.value = false;
@@ -194,8 +248,18 @@ export default function CameraFullScreen() {
     setIsInferencing(true);
     isInferencingShared.value = true;
     try {
+      const tStart = nowMs();
+      const lastStart = lastInferenceStartRef.current;
+      lastInferenceStartRef.current = tStart;
+      let tAfterPad = 0;
+      let tAfterInfer = 0;
+      let tAfterCorrect = 0;
+      let tAfterTrack = 0;
+
       const padded = padToSquare(rgbData, resizedWidth, resizedHeight, padX, padY);
-      const detections = await runYoloInference(padded, 640, 640);
+      tAfterPad = nowMs();
+      const detections = await runYoloInference(padded, INPUT_SIZE, INPUT_SIZE);
+      tAfterInfer = nowMs();
       const corrected = detections.map((det) => {
         const x = (det.x - padX) / scale;
         const y = (det.y - padY) / scale;
@@ -209,20 +273,68 @@ export default function CameraFullScreen() {
           height: Math.max(1, Math.min(frameHeight, height)),
         };
       });
-      setDetections(corrected);
-      setBallSide(getBallSide(corrected, frameWidth));
+      tAfterCorrect = nowMs();
+      const ballDets: Det[] = [];
+      for (let i = 0; i < corrected.length; i += 1) {
+        const det = corrected[i];
+        if ((det.className ?? det.class) === BASKETBALL_LABEL || det.class === 0) {
+          ballDets.push(detectionToDet(det));
+        }
+      }
+      const tracks = trackerRef.current.update(ballDets);
+      const bestTrack = getBestTrack(tracks);
+      const tracked = bestTrack ? [trackToDetection(bestTrack)] : [];
+      const ballCenterX = bestTrack ? (bestTrack.x1 + bestTrack.x2) * 0.5 : null;
+      tAfterTrack = nowMs();
+      setDetections(tracked);
+      setBallSide(
+        ballCenterX === null
+          ? getBallSide(tracked, frameWidth)
+          : getBallSideFromCenterX(ballCenterX, frameWidth)
+      );
       setLastFrameSize({ width: frameWidth, height: frameHeight });
       setLastInferenceAt(Date.now());
-      console.log('🧠 YOLO detections:', corrected.map((det) => ({
-        class: det.className ?? det.class,
-        confidence: Number(det.confidence.toFixed(3)),
-        box: {
-          x: Number(det.x.toFixed(1)),
-          y: Number(det.y.toFixed(1)),
-          w: Number(det.width.toFixed(1)),
-          h: Number(det.height.toFixed(1)),
-        },
-      })));
+      if (isLiveMode || ENABLE_TIMING_LOGS) {
+        const padMs = tAfterPad - tStart;
+        const inferMs = tAfterInfer - tAfterPad;
+        const correctMs = tAfterCorrect - tAfterInfer;
+        const trackMs = tAfterTrack - tAfterCorrect;
+        const totalMs = tAfterTrack - tStart;
+        const gapMs = lastStart ? tStart - lastStart : 0;
+        if (ENABLE_LIVE_LOGS || ENABLE_TIMING_LOGS) {
+          liveLogCounterRef.current += 1;
+          if (liveLogCounterRef.current % LIVE_LOG_EVERY === 0 || ENABLE_TIMING_LOGS) {
+            console.log('⏱️ Inference timings (ms):', {
+              padToSquare: Math.round(padMs),
+              runYoloInference: Math.round(inferMs),
+              correctDetections: Math.round(correctMs),
+              trackUpdate: Math.round(trackMs),
+              total: Math.round(totalMs),
+              sinceLastInferenceStart: Math.round(gapMs),
+            });
+          }
+        }
+        if (isLiveMode && tracked.length > 0 && ENABLE_LIVE_LOGS) {
+          const now = Date.now();
+          const last = lastLiveDetectionAtRef.current;
+          if (last) {
+            console.log('⏱️ Time between live detections (ms):', now - last);
+          }
+          lastLiveDetectionAtRef.current = now;
+        }
+      }
+      if (!isLiveMode && ENABLE_LIVE_LOGS) {
+        console.log('🧠 YOLO detections:', tracked.map((det) => ({
+          class: det.className ?? det.class,
+          confidence: Number(det.confidence.toFixed(3)),
+          box: {
+            x: Number(det.x.toFixed(1)),
+            y: Number(det.y.toFixed(1)),
+            w: Number(det.width.toFixed(1)),
+            h: Number(det.height.toFixed(1)),
+          },
+        })));
+      }
     } catch (error) {
       console.error('Inference error:', error);
     } finally {
@@ -245,7 +357,7 @@ export default function CameraFullScreen() {
     padX: number,
     padY: number
   ) => {
-    const size = 640;
+    const size = INPUT_SIZE;
     const output = new Array<number>(size * size * 3).fill(0);
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {
@@ -270,11 +382,11 @@ export default function CameraFullScreen() {
       const origWidth = Number.isFinite(photo.width) ? photo.width : 0;
       const origHeight = Number.isFinite(photo.height) ? photo.height : 0;
       const maxSide = Math.max(origWidth, origHeight);
-      const scale = maxSide > 0 ? 640 / maxSide : 1;
+      const scale = maxSide > 0 ? INPUT_SIZE / maxSide : 1;
       const resizedWidth = Math.max(1, Math.round(origWidth * scale));
       const resizedHeight = Math.max(1, Math.round(origHeight * scale));
-      const padX = Math.floor((640 - resizedWidth) / 2);
-      const padY = Math.floor((640 - resizedHeight) / 2);
+      const padX = Math.floor((INPUT_SIZE - resizedWidth) / 2);
+      const padY = Math.floor((INPUT_SIZE - resizedHeight) / 2);
       const resized = await ImageManipulator.manipulateAsync(
         photoUri,
         [{ resize: { width: resizedWidth, height: resizedHeight } }],
@@ -285,7 +397,7 @@ export default function CameraFullScreen() {
       }
       const rgbData = decodeJpegToRgb(resized.base64);
       const padded = padToSquare(Array.from(rgbData), resizedWidth, resizedHeight, padX, padY);
-      const results = await runYoloInference(padded, 640, 640);
+      const results = await runYoloInference(padded, INPUT_SIZE, INPUT_SIZE);
       const corrected = results.map((det) => {
         const x = (det.x - padX) / scale;
         const y = (det.y - padY) / scale;
@@ -342,11 +454,11 @@ export default function CameraFullScreen() {
       lastProcessedRequestId.value = singleShotRequestId.value;
       
       const maxSide = frame.width > frame.height ? frame.width : frame.height;
-      const scale = 640 / maxSide;
+      const scale = INPUT_SIZE / maxSide;
       const resizedWidth = Math.round(frame.width * scale);
       const resizedHeight = Math.round(frame.height * scale);
-      const padX = Math.floor((640 - resizedWidth) / 2);
-      const padY = Math.floor((640 - resizedHeight) / 2);
+      const padX = Math.floor((INPUT_SIZE - resizedWidth) / 2);
+      const padY = Math.floor((INPUT_SIZE - resizedHeight) / 2);
 
       const rgbData = resizePlugin.resize(frame, {
         scale: { width: resizedWidth, height: resizedHeight },
@@ -369,25 +481,26 @@ export default function CameraFullScreen() {
         resizedHeight,
         padX,
         padY,
-        scale
+        scale,
+        false
       );
       return;
     }
 
-    // Handle live inference (throttled to 3 FPS = every 333ms)
+    // Handle live inference (throttled)
     if (isLiveInferenceShared.value && !isInferencingShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = 1000 / 5; // 200ms for 5 FPS
+      const inferenceInterval = 1000 / LIVE_INFERENCE_FPS;
       
       if (timeSinceLastInference >= inferenceInterval) {
         lastLiveInferenceTime.value = now;
 
         const maxSide = frame.width > frame.height ? frame.width : frame.height;
-        const scale = 640 / maxSide;
+        const scale = INPUT_SIZE / maxSide;
         const resizedWidth = Math.round(frame.width * scale);
         const resizedHeight = Math.round(frame.height * scale);
-        const padX = Math.floor((640 - resizedWidth) / 2);
-        const padY = Math.floor((640 - resizedHeight) / 2);
+        const padX = Math.floor((INPUT_SIZE - resizedWidth) / 2);
+        const padY = Math.floor((INPUT_SIZE - resizedHeight) / 2);
 
         const rgbData = resizePlugin.resize(frame, {
           scale: { width: resizedWidth, height: resizedHeight },
@@ -410,7 +523,8 @@ export default function CameraFullScreen() {
           resizedHeight,
           padX,
           padY,
-          scale
+          scale,
+          true
         );
       }
     }
@@ -513,7 +627,7 @@ export default function CameraFullScreen() {
           <ThemedText style={styles.modelStatus}>Model Loaded ✓</ThemedText>
         )}
         <View style={styles.toggleContainer} pointerEvents="auto">
-          <ThemedText style={styles.toggleLabel}>Live Inference (5 FPS)</ThemedText>
+          <ThemedText style={styles.toggleLabel}>Live Inference ({LIVE_INFERENCE_FPS} FPS)</ThemedText>
           <Switch
             value={isLiveInference}
             onValueChange={(value) => {

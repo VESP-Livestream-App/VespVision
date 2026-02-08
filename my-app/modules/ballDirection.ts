@@ -2,24 +2,34 @@ import type { Detection } from '@/modules/yoloUtils';
 
 export type BallSide = 'left' | 'right' | 'center' | null;
 
-const BALL_LABEL = 'sports ball';
+const BALL_LABELS = new Set(['sports ball', 'basketball']);
 const CENTER_THRESHOLD_RATIO = 0.05;
 
-export const getBallSide = (detections: Detection[], frameWidth: number): BallSide => {
+export const getBallSideFromCenterX = (centerX: number, frameWidth: number): BallSide => {
   if (frameWidth <= 0) {
     return null;
   }
-  const sportsBall = detections.find((det) => (det.className ?? det.class) === BALL_LABEL);
-  if (!sportsBall) {
-    return null;
-  }
-  const centerX = sportsBall.x + sportsBall.width / 2;
   const frameCenter = frameWidth / 2;
   const delta = centerX - frameCenter;
   if (Math.abs(delta) <= frameWidth * CENTER_THRESHOLD_RATIO) {
     return 'center';
   }
   return delta < 0 ? 'left' : 'right';
+};
+
+export const getBallSide = (detections: Detection[], frameWidth: number): BallSide => {
+  if (frameWidth <= 0) {
+    return null;
+  }
+  const sportsBall = detections.find((det) => {
+    const label = det.className ?? det.class;
+    return BALL_LABELS.has(String(label)) || label === 0;
+  });
+  if (!sportsBall) {
+    return null;
+  }
+  const centerX = sportsBall.x + sportsBall.width / 2;
+  return getBallSideFromCenterX(centerX, frameWidth);
 };
 
 /**
@@ -44,7 +54,10 @@ export const getTurnSignalValue = (
     return null;
   }
   
-  const sportsBall = detections.find((det) => (det.className ?? det.class) === BALL_LABEL);
+  const sportsBall = detections.find((det) => {
+    const label = det.className ?? det.class;
+    return BALL_LABELS.has(String(label)) || label === 0;
+  });
   if (!sportsBall) {
     return null;
   }
