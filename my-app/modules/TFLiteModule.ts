@@ -2,7 +2,7 @@ import { requireOptionalNativeModule } from 'expo-modules-core';
 
 interface TFLiteModuleInterface {
   loadModel(modelPath: string): Promise<boolean>;
-  runInference(inputData: number[], inputShape: number[]): Promise<number[]>;
+  runInference(inputData: number[] | Float32Array | Uint8Array, inputShape: number[]): Promise<number[]>;
   close(): Promise<void>;
 }
 

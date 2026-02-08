@@ -2,14 +2,17 @@ import type { Detection } from '@/modules/yoloUtils';
 
 export type BallSide = 'left' | 'right' | 'center' | null;
 
-const BALL_LABEL = 'sports ball';
+const BALL_LABELS = ['sports ball', 'basketball', 'soccer ball', 'tennis ball'];
 const CENTER_THRESHOLD_RATIO = 0.05;
 
 export const getBallSide = (detections: Detection[], frameWidth: number): BallSide => {
   if (frameWidth <= 0) {
     return null;
   }
-  const sportsBall = detections.find((det) => (det.className ?? det.class) === BALL_LABEL);
+  const sportsBall = detections.find((det) => {
+    const label = String(det.className ?? det.class).toLowerCase();
+    return BALL_LABELS.includes(label);
+  });
   if (!sportsBall) {
     return null;
   }
@@ -44,7 +47,10 @@ export const getTurnSignalValue = (
     return null;
   }
   
-  const sportsBall = detections.find((det) => (det.className ?? det.class) === BALL_LABEL);
+  const sportsBall = detections.find((det) => {
+    const label = String(det.className ?? det.class).toLowerCase();
+    return BALL_LABELS.includes(label);
+  });
   if (!sportsBall) {
     return null;
   }

@@ -53,6 +53,7 @@
       "favicon": "./assets/images/favicon.png"
     },
     "plugins": [
+      "./plugins/withAndroidAssets",
       "expo-router",
       [
         "expo-splash-screen",

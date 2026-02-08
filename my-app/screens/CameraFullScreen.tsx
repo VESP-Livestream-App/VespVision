@@ -1,27 +1,30 @@
-import React, { useEffect, useState, useRef, useMemo } from 'react';
-import { StyleSheet, View, ActivityIndicator, AppState, Pressable, Switch } from 'react-native';
-import { 
-  Camera, 
-  useCameraDevice, 
+import useBle from '@/app/hooks/use-ble';
+import { ThemedText } from '@/components/themed-text';
+import { ThemedView } from '@/components/themed-view';
+import { getBallSide, type BallSide } from '@/modules/ballDirection';
+import { sendTurnSignal } from '@/modules/bleClient';
+import { getBLEControlService } from '@/modules/bleControlService';
+import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
+import { ControlLoop } from '@/modules/controlLoop';
+import { addSnapshot } from '@/modules/snapshotStore';
+import { runYoloInference } from '@/modules/yoloInference';
+import { closeYoloModel, loadYoloModel } from '@/modules/yoloModel';
+import type { Detection } from '@/modules/yoloUtils';
+import { useFocusEffect } from '@react-navigation/native';
+import * as ImageManipulator from 'expo-image-manipulator';
+import { useRouter } from 'expo-router';
+import * as ScreenOrientation from 'expo-screen-orientation';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, Pressable, StyleSheet, Switch, View } from 'react-native';
+import {
+  Camera,
+  Frame,
+  useCameraDevice,
   useCameraPermission,
   useFrameProcessor,
-  Frame,
 } from 'react-native-vision-camera';
-import { createResizePlugin } from 'vision-camera-resize-plugin';
-import * as ScreenOrientation from 'expo-screen-orientation';
-import * as ImageManipulator from 'expo-image-manipulator';
-import { useFocusEffect } from '@react-navigation/native';
-import { useRouter } from 'expo-router';
-import { ThemedView } from '@/components/themed-view';
-import { ThemedText } from '@/components/themed-text';
-import { loadYoloModel, closeYoloModel } from '@/modules/yoloModel';
-import { runYoloInference } from '@/modules/yoloInference';
-import type { Detection } from '@/modules/yoloUtils';
 import { useRunOnJS, useSharedValue } from 'react-native-worklets-core';
-import { addSnapshot } from '@/modules/snapshotStore';
-import { getBallSide, type BallSide } from '@/modules/ballDirection';
-import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
-import { sendTurnSignal } from '@/modules/bleClient';
+import { createResizePlugin } from 'vision-camera-resize-plugin';
 
 const base64ToUint8Array = (base64: string): Uint8Array => {
   const binaryString = global.atob(base64);
@@ -73,6 +76,17 @@ export default function CameraFullScreen() {
   const isLiveInferenceShared = useSharedValue(false);
   const lastLiveInferenceTime = useSharedValue(0);
   const isInferencingShared = useSharedValue(false);
+
+  // BLE integration for control loop
+  const {
+    connectedId,
+    currentPos,
+    sendAngleTime,
+  } = useBle();
+
+  // Control loop instance
+  const controlLoopRef = useRef<ControlLoop | null>(null);
+  const bleServiceRef = useRef(getBLEControlService());
 
   useEffect(() => {
     if (!hasPermission) {
@@ -155,7 +169,51 @@ export default function CameraFullScreen() {
     };
   }, []);
 
-  // Send turn signal via BLE when detections change
+  // Initialize control loop and BLE service
+  useEffect(() => {
+    // Initialize control loop with default config 
+    controlLoopRef.current = new ControlLoop({
+      fieldOfView: 70,
+      servoSpeed: 60.0,
+      controllerGain: 25.0,
+      frameWidth: lastFrameSize.width || 640,
+      planeDegrees: 180,
+      edgeViewRedundancyFactor: 0.25,
+    });
+
+    // Initialize BLE service with sendAngleTime callback
+    bleServiceRef.current.initialize(async (deviceId, angle, timeMs) => {
+      await sendAngleTime(deviceId, angle, timeMs);
+    });
+
+    return () => {
+      // Cleanup
+      controlLoopRef.current?.reset();
+      bleServiceRef.current.reset();
+    };
+  }, [sendAngleTime]);
+
+  // Update BLE service when connection changes
+  useEffect(() => {
+    bleServiceRef.current.setConnectedDevice(connectedId);
+  }, [connectedId]);
+
+  // Update control loop frame width when it changes
+  useEffect(() => {
+    if (controlLoopRef.current && lastFrameSize.width > 0) {
+      // Recreate control loop with new frame width
+      controlLoopRef.current = new ControlLoop({
+        fieldOfView: 70,
+        servoSpeed: 60.0,
+        controllerGain: 25.0,
+        frameWidth: lastFrameSize.width,
+        planeDegrees: 180,
+        edgeViewRedundancyFactor: 0.25,
+      });
+    }
+  }, [lastFrameSize.width]);
+
+  // Send turn signal via BLE when detections change (legacy - can be removed if using control loop)
   useEffect(() => {
     if (lastFrameSize.width === 0) {
       return;
@@ -171,6 +229,31 @@ export default function CameraFullScreen() {
       console.error('❌ Failed to send turn signal via BLE:', error);
     });
   }, [detections, lastFrameSize.width]);
+
+  // Control loop: process detections and send servo commands
+  useEffect(() => {
+    if (!controlLoopRef.current || !bleServiceRef.current.isConnected()) {
+      return;
+    }
+
+    if (lastFrameSize.width === 0 || currentPos === null) {
+      return;
+    }
+
+    // Run control loop update
+    const command = controlLoopRef.current.update(
+      detections,
+      currentPos,
+      lastFrameSize.width
+    );
+
+    if (command) {
+      // Send command via BLE
+      bleServiceRef.current.sendCommand(command).catch((error) => {
+        console.error('❌ Failed to send control command via BLE:', error);
+      });
+    }
+  }, [detections]);
 
   const handleInferenceOnJS = async (
     rgbData: number[],
@@ -377,7 +460,7 @@ export default function CameraFullScreen() {
     // Handle live inference (throttled to 3 FPS = every 333ms)
     if (isLiveInferenceShared.value && !isInferencingShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = 1000 / 5; // 200ms for 5 FPS
+      const inferenceInterval = 5000; // 200ms for 5 FPS
       
       if (timeSinceLastInference >= inferenceInterval) {
         lastLiveInferenceTime.value = now;

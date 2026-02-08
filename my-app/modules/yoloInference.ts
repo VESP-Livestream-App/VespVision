@@ -1,5 +1,6 @@
+import { startTimer, withProfiling } from '@/lib/profiler';
 import { TFLite, isTFLiteAvailable } from '@/modules/TFLiteModule';
-import { getYOLOInputShape, normalizeInput, parseYOLOOutput, type Detection } from '@/modules/yoloUtils';
+import { getYOLOInputShape, parseYOLOOutput, type Detection } from '@/modules/yoloUtils';
 
 type PreprocessOptions = {
   normalize?: boolean;
@@ -14,7 +15,8 @@ let hasLoggedOutputStats = false;
 
 type OutputLayout = 'predMajor' | 'classMajor';
 
-const preprocessRgb = (rgbData: ArrayLike<number>, options: PreprocessOptions): number[] => {
+const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): number[] => {
+  // Working version: normalize to 0-1 range for Float32
   const normalize = options.normalize ?? true;
   const rgbOrder = options.rgbOrder ?? true;
   const out: number[] = new Array(rgbData.length);
@@ -28,9 +30,11 @@ const preprocessRgb = (rgbData: ArrayLike<number>, options: PreprocessOptions): 
     const rOut = rgbOrder ? r : b;
     const bOut = rgbOrder ? b : r;
     const gOut = g;
+    // Normalize to 0-1 range (working version)
     out[i] = normalize ? rOut / 255.0 : rOut;
     out[i + 1] = normalize ? gOut / 255.0 : gOut;
     out[i + 2] = normalize ? bOut / 255.0 : bOut;
+    
     if (rOut < min) min = rOut;
     if (gOut < min) min = gOut;
     if (bOut < min) min = bOut;
@@ -51,7 +55,7 @@ const preprocessRgb = (rgbData: ArrayLike<number>, options: PreprocessOptions): 
   }
 
   return out;
-};
+});
 
 export const runYoloInference = async (
   rgbData: ArrayLike<number>,
@@ -69,8 +73,11 @@ export const runYoloInference = async (
 
   // YOLO input shape [1, 640, 640, 3]
   const inputShape = getYOLOInputShape();
-
+  
+  const endInferenceTimer = startTimer('TFLite.runInference');
   const output = await TFLite.runInference(normalizedInput, inputShape);
+  endInferenceTimer();
+  
   if (!output) {
     console.warn('TFLite returned no output');
     return [];
@@ -80,7 +87,7 @@ export const runYoloInference = async (
   logOutputStats(normalizedOutput);
   return parseYOLOOutput(normalizedOutput, frameWidth, frameHeight, {
     inputSize: 640,
-    numClasses: 80,
+    numClasses: 2, // basketball and rim
     confidenceThreshold: 0.25,
     nmsThreshold: 0.4,
     applySigmoid: options.applySigmoid ?? false,

@@ -1,6 +1,10 @@
 {
-  "platforms": ["apple"],
-  "apple": {
+  "platforms": ["ios", "android"],
+  "android": {
+    "package": "my.app.tflite",
+    "modules": ["my.app.tflite.TFLiteModule"]
+  },
+  "ios": {
     "modules": ["TFLiteModule"]
   }
 }
