@@ -15,13 +15,13 @@ let hasLoggedOutputStats = false;
 
 type OutputLayout = 'predMajor' | 'classMajor';
 
-const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): Uint8Array => {
-  // Using Uint8Array to prevent bridge crash with large arrays. 
-  // IMPORTANT: This assumes the model expects INT8 (0-255) inputs.
+const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): number[] => {
+  // Output plain number[] 0-1 so the native bridge receives [Double] on iOS and List<Double> on Android.
+  // Passing Uint8Array can cause iOS bridge to crash or deserialize incorrectly.
   const rgbOrder = options.rgbOrder ?? true;
-  const out = new Uint8Array(rgbData.length);
-  let min = 255;
-  let max = 0;
+  const normalize = options.normalize ?? true;
+  const scale = normalize ? 1 / 255 : 1;
+  const out: number[] = new Array(rgbData.length);
 
   for (let i = 0; i < rgbData.length; i += 3) {
     const r = rgbData[i];
@@ -30,29 +30,17 @@ const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>
     const rOut = rgbOrder ? r : b;
     const bOut = rgbOrder ? b : r;
     const gOut = g;
-    
-    // Pass raw 0-255 values. 
-    // If model needs float, this will fail detection but won't crash apps.
-    out[i] = rOut;
-    out[i + 1] = gOut;
-    out[i + 2] = bOut;
-    
-    if (rOut < min) min = rOut;
-    if (gOut < min) min = gOut;
-    if (bOut < min) min = bOut;
-    if (rOut > max) max = rOut;
-    if (gOut > max) max = gOut;
-    if (bOut > max) max = bOut;
+    out[i] = rOut * scale;
+    out[i + 1] = gOut * scale;
+    out[i + 2] = bOut * scale;
   }
 
   if (!hasLoggedInputStats) {
     hasLoggedInputStats = true;
     console.log('🔎 YOLO input stats', {
-      normalize: options.normalize,
+      normalize,
       rgbOrder,
-      rawMin: min,
-      rawMax: max,
-      firstPixel: [rgbData[0], rgbData[1], rgbData[2]],
+      firstPixel: [out[0], out[1], out[2]],
     });
   }
 

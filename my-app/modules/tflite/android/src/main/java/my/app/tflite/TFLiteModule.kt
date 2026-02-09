@@ -62,8 +62,8 @@ class TFLiteModule : Module() {
       }
     }
 
-    // Changed to accept ByteArray directly to support Uint8 input
-    AsyncFunction("runInference") { byteInput: ByteArray, inputShape: List<Int>, promise: Promise ->
+    // Accept List<Double> (0-1 normalized) from JS so iOS and Android share the same bridge type and avoid Uint8Array crash on iOS
+    AsyncFunction("runInference") { inputArray: List<Double>, inputShape: List<Int>, promise: Promise ->
       val interpreter = interpreter
       if (interpreter == null) {
         promise.reject("MODEL_NOT_LOADED", "Model not loaded. Call loadModel first.", null)
@@ -76,24 +76,22 @@ class TFLiteModule : Module() {
         
         android.util.Log.d("TFLiteModule", "Input Tensor: Type=$inputDataType, Bytes=${inputTensor.numBytes()}")
 
-        val inputBytesNeeded = byteInput.size 
-        
+        val numElements = inputArray.size
         val inputBuffer: ByteBuffer
 
-        if (inputDataType == org.tensorflow.lite.DataType.FLOAT32 && inputTensor.numBytes() == inputBytesNeeded * 4) {
-             // Case: Model expects Float32, but we provided generic Byte input. 
-             // We convert Bytes [0, 255] -> Float32 [0.0, 1.0]
+        if (inputDataType == org.tensorflow.lite.DataType.FLOAT32 && inputTensor.numBytes() == numElements * 4) {
              inputBuffer = ByteBuffer.allocateDirect(inputTensor.numBytes()).order(ByteOrder.nativeOrder())
              val floatView = inputBuffer.asFloatBuffer()
-             for (b in byteInput) {
-                 floatView.put((b.toInt() and 0xFF) / 255.0f)
+             for (v in inputArray) {
+                 floatView.put(v.toFloat())
              }
-        } else if (inputTensor.numBytes() == inputBytesNeeded) {
-             // Case: Exact match (e.g. Uint8 -> Uint8)
-             inputBuffer = ByteBuffer.allocateDirect(inputBytesNeeded).order(ByteOrder.nativeOrder())
-             inputBuffer.put(byteInput)
+        } else if (inputDataType == org.tensorflow.lite.DataType.UINT8 && inputTensor.numBytes() == numElements) {
+             inputBuffer = ByteBuffer.allocateDirect(numElements).order(ByteOrder.nativeOrder())
+             for (v in inputArray) {
+                 inputBuffer.put((v.coerceIn(0.0, 1.0) * 255).toInt().toByte())
+             }
         } else {
-             promise.reject("INPUT_SIZE_MISMATCH", "Model expects ${inputTensor.numBytes()} bytes but input has $inputBytesNeeded bytes. Check input shape/type.", null)
+             promise.reject("INPUT_SIZE_MISMATCH", "Model expects ${inputTensor.numBytes()} bytes but input has $numElements elements. Check input shape/type.", null)
              return@AsyncFunction
         }
         
