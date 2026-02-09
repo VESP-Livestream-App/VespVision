@@ -460,7 +460,7 @@ export default function CameraFullScreen() {
     // Handle live inference (throttled to 3 FPS = every 333ms)
     if (isLiveInferenceShared.value && !isInferencingShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = 10000; // 200ms for 5 FPS
+      const inferenceInterval = 1000; // 200ms for 5 FPS
       
       if (timeSinceLastInference >= inferenceInterval) {
         lastLiveInferenceTime.value = now;

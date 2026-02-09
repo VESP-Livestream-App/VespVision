@@ -92,9 +92,9 @@ export class Servo {
    * @param currentPos - Current actual position from BLE
    * @param fieldOfView - Field of view in degrees
    */
-  updateSearch(currentPos: number, fieldOfView: number, edgeRedundancyFactor: number = 0.25): void {
+  updateSearch(currentPos: number, fieldOfView: number, edgeRedundancyFactor: number = 0.25): boolean {
     if (!this.searching) {
-      return;
+      return false;
     }
 
     const fovQuarter = Math.floor(fieldOfView * edgeRedundancyFactor);
@@ -102,11 +102,14 @@ export class Servo {
     // If reached left edge, move to right edge
     if (currentPos <= this.minPos + fovQuarter) {
       this._targetPos = this.maxPos - fovQuarter;
+      return true;
     }
     // If reached right edge, move to left edge
     else if (currentPos >= this.maxPos - fovQuarter) {
       this._targetPos = this.minPos + fovQuarter;
+      return true;
     }
+    return false; 
   }
 
   /**

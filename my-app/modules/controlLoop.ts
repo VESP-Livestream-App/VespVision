@@ -146,14 +146,23 @@ export class ControlLoop {
       }
     );
     
-    // Update servo search mode if needed
-    if (this.servo.isSearching) {
-      this.servo.updateSearch(currentServoPos, this.fieldOfView, this.edgeRedundancyFactor);
-    }
-    
     // If no ball detected, enter search mode
     if (!ballDetection) {
-      if (this.state.isTracking) {
+      // Update servo search mode if needed - only when actually searching
+      if (this.servo.isSearching) {
+        const updated = this.servo.updateSearch(currentServoPos, this.fieldOfView, this.edgeRedundancyFactor);
+        if (updated) {
+          this.state.targetAngle = this.servo.targetPos;
+          const timeMs = this.servo.getTimeToTarget(currentServoPos);
+          console.log('🔍 [Control] Searching...');
+          console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
+          console.log(`   Target angle: ${this.servo.targetPos.toFixed(2)}°`);
+          console.log(`   Time to move: ${timeMs}ms`);
+          return { angle: this.servo.targetPos, timeMs };
+        }
+      }
+      
+      else if (this.state.isTracking) {
         // Just lost target - enter search mode
         console.log('🎯 [Control] Target lost - entering search mode');
         console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
@@ -173,21 +182,6 @@ export class ControlLoop {
         
         return { angle: this.servo.targetPos, timeMs };
       }
-      
-      // Already searching - continue search
-      if (this.servo.isSearching) {
-        this.state.isSearching = true;
-        this.state.targetAngle = this.servo.targetPos;
-        const timeMs = this.servo.getTimeToTarget(currentServoPos);
-        
-        console.log('🔍 [Control] Searching...');
-        console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
-        console.log(`   Target angle: ${this.servo.targetPos.toFixed(2)}°`);
-        console.log(`   Time to move: ${timeMs}ms`);
-        
-        return { angle: this.servo.targetPos, timeMs };
-      }
-      
       return null;
     }
     
