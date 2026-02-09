@@ -8,6 +8,8 @@ export interface Detection {
   confidence: number;
   class: number;
   className?: string;
+  trackId?: number;
+  isPredicted?: boolean;
 }
 
 export interface YOLOConfig {

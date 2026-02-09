@@ -5,6 +5,7 @@ import { getBallSide, type BallSide } from '@/modules/ballDirection';
 import { sendTurnSignal } from '@/modules/bleClient';
 import { getBLEControlService } from '@/modules/bleControlService';
 import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
+import { createByteTrackLite } from '@/modules/byteTrackLite';
 import { ControlLoop } from '@/modules/controlLoop';
 import { addSnapshot } from '@/modules/snapshotStore';
 import { runYoloInference } from '@/modules/yoloInference';
@@ -76,6 +77,7 @@ export default function CameraFullScreen() {
   const isLiveInferenceShared = useSharedValue(false);
   const lastLiveInferenceTime = useSharedValue(0);
   const isInferencingShared = useSharedValue(false);
+  const trackerRef = useRef(createByteTrackLite());
 
   // BLE integration for control loop
   const {
@@ -166,8 +168,45 @@ export default function CameraFullScreen() {
         closeYoloModel();
         isModelLoadedShared.value = false;
       }
+      trackerRef.current.reset();
     };
   }, []);
+
+  useEffect(() => {
+    if (!isLiveInference || !isModelLoaded) {
+      return;
+    }
+    const intervalMs = 50;
+    const timer = setInterval(() => {
+      if (!lastInferenceAt || lastFrameSize.width === 0 || lastFrameSize.height === 0) {
+        return;
+      }
+      if (isInferencing) {
+        return;
+      }
+      const now = Date.now();
+      const sinceLast = now - lastInferenceAt;
+      if (sinceLast < 80) {
+        return;
+      }
+      const predicted = trackerRef.current.predict(now, {
+        width: lastFrameSize.width,
+        height: lastFrameSize.height,
+      });
+      if (predicted.length === 0) {
+        return;
+      }
+      setDetections(predicted);
+      setBallSide(getBallSide(predicted, lastFrameSize.width));
+    }, intervalMs);
+    return () => clearInterval(timer);
+  }, [isLiveInference, isModelLoaded, isInferencing, lastInferenceAt, lastFrameSize.width, lastFrameSize.height]);
+
+  useEffect(() => {
+    if (!isLiveInference) {
+      trackerRef.current.reset();
+    }
+  }, [isLiveInference]);
 
   // Initialize control loop and BLE service
   useEffect(() => {
@@ -294,10 +333,15 @@ export default function CameraFullScreen() {
           height: Math.max(1, Math.min(frameHeight, height)),
         };
       });
-      setDetections(corrected);
-      setBallSide(getBallSide(corrected, frameWidth));
+      const runAt = Date.now();
+      const tracked = trackerRef.current.update(corrected, runAt, {
+        width: frameWidth,
+        height: frameHeight,
+      });
+      setDetections(tracked);
+      setBallSide(getBallSide(tracked, frameWidth));
       setLastFrameSize({ width: frameWidth, height: frameHeight });
-      setLastInferenceAt(Date.now());
+      setLastInferenceAt(runAt);
       console.log('🧠 YOLO detections:', corrected.map((det) => ({
         class: det.className ?? det.class,
         confidence: Number(det.confidence.toFixed(3)),
