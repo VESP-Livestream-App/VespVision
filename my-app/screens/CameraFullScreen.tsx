@@ -265,17 +265,19 @@ export default function CameraFullScreen() {
     padY: number,
     scale: number
   ) => {
-    if (!isModelLoaded || isInferencing) {
+    if (!isModelLoaded) {
+      console.log('❌ Inference skipped: model not loaded');
       isInferencingShared.value = false;
       return;
     }
     if (!rgbData || rgbData.length === 0) {
+      console.warn('❌ Inference skipped: empty RGB buffer');
       isInferencingShared.value = false;
-      console.warn('Skipping inference: empty RGB buffer');
       return;
     }
+    // Don't check isInferencing here - already guarded by isInferencingShared in worklet
     setIsInferencing(true);
-    isInferencingShared.value = true;
+    // Note: isInferencingShared.value already set to true in worklet before calling this function
     try {
       const padded = padToSquare(rgbData, resizedWidth, resizedHeight, padX, padY);
       const detections = await runYoloInference(padded, 640, 640);
@@ -307,14 +309,15 @@ export default function CameraFullScreen() {
         },
       })));
     } catch (error) {
-      console.error('Inference error:', error);
+      console.error('❌ Inference error:', error);
     } finally {
       setIsInferencing(false);
       isInferencingShared.value = false;
+      console.log('✅ Inference complete, flags reset');
     }
   };
 
-  const runInferenceOnJS = useRunOnJS(handleInferenceOnJS, [isModelLoaded, isInferencing]);
+  const runInferenceOnJS = useRunOnJS(handleInferenceOnJS, [isModelLoaded]);
   const updateFpsOnJS = useRunOnJS((value: number) => {
     setFps(value);
   }, []);
@@ -423,6 +426,7 @@ export default function CameraFullScreen() {
         return; // Skip if already inferencing
       }
       lastProcessedRequestId.value = singleShotRequestId.value;
+      isInferencingShared.value = true;
       
       const maxSide = frame.width > frame.height ? frame.width : frame.height;
       const scale = 640 / maxSide;
@@ -437,6 +441,7 @@ export default function CameraFullScreen() {
         dataType: 'uint8',
       });
       if (!rgbData || rgbData.length === 0) {
+        isInferencingShared.value = false;
         return;
       }
       const length = rgbData.length;
@@ -457,13 +462,14 @@ export default function CameraFullScreen() {
       return;
     }
 
-    // Handle live inference (throttled to 3 FPS = every 333ms)
+    // Handle live inference (throttled to 1 FPS = every 1000ms)
     if (isLiveInferenceShared.value && !isInferencingShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
       const inferenceInterval = 1000; // 200ms for 5 FPS
       
       if (timeSinceLastInference >= inferenceInterval) {
         lastLiveInferenceTime.value = now;
+        isInferencingShared.value = true; // Set flag in worklet to prevent race condition
 
         const maxSide = frame.width > frame.height ? frame.width : frame.height;
         const scale = 640 / maxSide;
@@ -478,6 +484,7 @@ export default function CameraFullScreen() {
           dataType: 'uint8',
         });
         if (!rgbData || rgbData.length === 0) {
+          isInferencingShared.value = false; // Reset flag if resize failed
           return;
         }
         const length = rgbData.length;
@@ -497,7 +504,7 @@ export default function CameraFullScreen() {
         );
       }
     }
-  }, [singleShotRequestId, lastProcessedRequestId, runInferenceOnJS]);
+  }, [runInferenceOnJS]);
 
 
   if (!hasPermission) {
@@ -617,8 +624,8 @@ export default function CameraFullScreen() {
             if (!isModelLoaded || isInferencing) {
               return;
             }
+            // Trigger single-shot frame processor inference only
             singleShotRequestId.value += 1;
-            handleSnapshot();
           }}
           pointerEvents="auto"
         >
