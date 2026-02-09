@@ -85,17 +85,22 @@ export class ControlLoop {
 
   /**
    * Convert pixel position to angle in degrees
-   * Maps frame pixels (0 to frameWidth) to plane degrees (0 to planeDegrees)
+   * Maps frame pixels (0 to frameWidth) to camera field-of-view,
+   * then scales that field-of-view segment into the full servo plane.
    * 
    * @param pixelX - X position in pixels (center of detection)
    * @returns Angle in degrees
    */
   pixelToAngle(pixelX: number): number {
-    // Map pixel position to angle
-    // pixelX = 0 -> angle = 0
-    // pixelX = frameWidth -> angle = planeDegrees
-    const normalized = pixelX / this.frameWidth;
-    return normalized * this.planeDegrees;
+    // Step 1: normalize pixel across the image width (camera field of view)
+    const normalized = pixelX / this.frameWidth; // 0 .. 1 over fieldOfView
+
+    // Step 2: convert to within-camera angle (0 .. fieldOfView)
+    const angleInFov = normalized * this.fieldOfView;
+
+    // Step 3: scale from camera FOV segment into full plane range
+    // (planeDegrees can be larger than the camera FOV)
+    return angleInFov * (this.planeDegrees / this.fieldOfView);
   }
 
   /**

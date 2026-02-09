@@ -207,9 +207,18 @@ function calculateIOU(box1: Detection, box2: Detection): number {
 /**
  * Prepare input shape for YOLO11n model
  */
+// Configurable input size for performance tuning
+// Lower resolution = faster inference (with accuracy trade-off)
+// 640 = original, 416 = 2.4x faster, 320 = 4x faster
+export const YOLO_INPUT_SIZE = 640; // Original size (reverted)
+
 export function getYOLOInputShape(): number[] {
-  // YOLO11n expects 640x640x3 RGB input
-  return [1, 640, 640, 3];
+  // YOLO11n can work with different input sizes
+  return [1, YOLO_INPUT_SIZE, YOLO_INPUT_SIZE, 3];
+}
+
+export function getYOLOInputSize(): number {
+  return YOLO_INPUT_SIZE;
 }
 
 /**

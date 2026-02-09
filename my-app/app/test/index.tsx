@@ -8,6 +8,7 @@ import { runYoloInference } from '@/modules/yoloInference';
 import { loadYoloModel, closeYoloModel } from '@/modules/yoloModel';
 import type { Detection } from '@/modules/yoloUtils';
 import { getSnapshots, subscribeSnapshots, type Snapshot as LiveSnapshot } from '@/modules/snapshotStore';
+import { runAllThreadingTests } from '@/modules/threadingTest';
 
 const TEST_IMAGES = [
   { id: 'test.jpg', label: 'test.jpg', source: require('../../assets/test.jpg') },
@@ -165,6 +166,17 @@ export default function TestImageScreen() {
       <Pressable style={styles.button} onPress={runTestInference}>
         <ThemedText style={styles.buttonText}>
           {isRunning ? 'Running…' : `Run on ${selectedImage.label}`}
+        </ThemedText>
+      </Pressable>
+      <Pressable 
+        style={[styles.button, styles.threadingButton]} 
+        onPress={() => {
+          console.log('🧪 Running Threading Tests...');
+          runAllThreadingTests().catch(console.error);
+        }}
+      >
+        <ThemedText style={styles.buttonText}>
+          🧪 Run Threading Tests
         </ThemedText>
       </Pressable>
       <ThemedText style={styles.debugText}>
@@ -368,6 +380,10 @@ const styles = StyleSheet.create({
     color: 'white',
     fontSize: 14,
     fontWeight: '600',
+  },
+  threadingButton: {
+    backgroundColor: '#FF6B35',
+    marginTop: 8,
   },
   loader: {
     marginTop: 10,

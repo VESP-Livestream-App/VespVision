@@ -7,9 +7,9 @@ import { getBLEControlService } from '@/modules/bleControlService';
 import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
 import { ControlLoop } from '@/modules/controlLoop';
 import { addSnapshot } from '@/modules/snapshotStore';
-import { runYoloInference } from '@/modules/yoloInference';
+import { inferenceQueue } from '@/modules/inferenceQueue';
 import { closeYoloModel, loadYoloModel } from '@/modules/yoloModel';
-import type { Detection } from '@/modules/yoloUtils';
+import { getYOLOInputSize, YOLO_INPUT_SIZE, type Detection } from '@/modules/yoloUtils';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
@@ -56,6 +56,7 @@ export default function CameraFullScreen() {
   const router = useRouter();
   const cameraRef = useRef<Camera>(null);
   const device = useCameraDevice('back');
+  const isMountedRef = useRef(true); // Track if component is mounted
   const [isActive, setIsActive] = useState(true);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [isModelLoaded, setIsModelLoaded] = useState(false);
@@ -68,6 +69,7 @@ export default function CameraFullScreen() {
   const [fps, setFps] = useState(0);
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('landscape');
   const [isLiveInference, setIsLiveInference] = useState(false);
+  const [showBoxes, setShowBoxes] = useState(false); // Toggle for box rendering
   const singleShotRequestId = useSharedValue(0);
   const lastProcessedRequestId = useSharedValue(0);
   const fpsFrameCount = useSharedValue(0);
@@ -76,6 +78,8 @@ export default function CameraFullScreen() {
   const isLiveInferenceShared = useSharedValue(false);
   const lastLiveInferenceTime = useSharedValue(0);
   const isInferencingShared = useSharedValue(false);
+  const isSnapshottingShared = useSharedValue(false); // Track snapshot state in worklet
+  const yoloInputSize = useSharedValue(YOLO_INPUT_SIZE); // Make accessible in worklet
 
   // BLE integration for control loop
   const {
@@ -161,6 +165,10 @@ export default function CameraFullScreen() {
     loadModel();
 
     return () => {
+      // Clean up on unmount
+      isMountedRef.current = false;
+      // Clear inference queue to prevent callbacks after unmount
+      inferenceQueue.clear();
       // Clean up model when component unmounts
       if (isModelLoaded) {
         closeYoloModel();
@@ -265,7 +273,9 @@ export default function CameraFullScreen() {
     padY: number,
     scale: number
   ) => {
-    if (!isModelLoaded || isInferencing) {
+    const requestStartTime = Date.now();
+    
+    if (!isModelLoaded) {
       isInferencingShared.value = false;
       return;
     }
@@ -274,29 +284,72 @@ export default function CameraFullScreen() {
       console.warn('Skipping inference: empty RGB buffer');
       return;
     }
-    setIsInferencing(true);
-    isInferencingShared.value = true;
-    try {
-      const padded = padToSquare(rgbData, resizedWidth, resizedHeight, padX, padY);
-      const detections = await runYoloInference(padded, 640, 640);
-      const corrected = detections.map((det) => {
-        const x = (det.x - padX) / scale;
-        const y = (det.y - padY) / scale;
-        const width = det.width / scale;
-        const height = det.height / scale;
-        return {
-          ...det,
-          x: Math.max(0, Math.min(frameWidth - 1, x)),
-          y: Math.max(0, Math.min(frameHeight - 1, y)),
-          width: Math.max(1, Math.min(frameWidth, width)),
-          height: Math.max(1, Math.min(frameHeight, height)),
-        };
+
+    // Preprocess frame (fast, synchronous)
+    const preprocessStart = Date.now();
+    const padded = padToSquare(rgbData, resizedWidth, resizedHeight, padX, padY);
+    const preprocessTime = Date.now() - preprocessStart;
+
+    // Queue inference (non-blocking - returns immediately)
+    // The queue will process this in the background and call the callback when done
+    // DON'T set isInferencing here - let the queue handle concurrency
+    const queueSize = inferenceQueue.size();
+    const isBusy = inferenceQueue.isBusy();
+    const enqueueTime = Date.now();
+    
+    if (queueSize > 0 || isBusy || preprocessTime > 5) {
+      console.log(`📥 [Queue Status]`, {
+        size: queueSize,
+        busy: isBusy,
+        preprocessTime: `${preprocessTime}ms`,
       });
-      setDetections(corrected);
-      setBallSide(getBallSide(corrected, frameWidth));
+    }
+    
+    // Set inferencing state only when queue is actually processing
+    // This prevents blocking the frame processor
+    if (!isBusy && queueSize === 0) {
+      isInferencingShared.value = true;
+      setIsInferencing(true);
+    }
+    
+    inferenceQueue.enqueue(
+      padded,
+      frameWidth,
+      frameHeight,
+      resizedWidth,
+      resizedHeight,
+      padX,
+      padY,
+      scale
+    ).then((detections) => {
+      // Safety check: Don't update state if component is unmounted
+      if (!isMountedRef.current) {
+        return;
+      }
+      
+      // This callback runs when inference completes (non-blocking)
+      // Detections are already corrected by the queue
+      const callbackStart = Date.now();
+      const totalTime = callbackStart - requestStartTime;
+      const queueTime = callbackStart - enqueueTime;
+      
+      // Update state (measure render time)
+      const stateUpdateStart = Date.now();
+      setDetections(detections);
+      setBallSide(getBallSide(detections, frameWidth));
       setLastFrameSize({ width: frameWidth, height: frameHeight });
       setLastInferenceAt(Date.now());
-      console.log('🧠 YOLO detections:', corrected.map((det) => ({
+      const stateUpdateTime = Date.now() - stateUpdateStart;
+      
+      // Log end-to-end timing (including state update)
+      console.log(`✅ [Inference Complete]`, {
+        totalTime: `${totalTime}ms`,
+        queueTime: `${queueTime}ms`,
+        stateUpdate: `${stateUpdateTime}ms`,
+        detections: detections.length,
+      });
+      
+      console.log('🧠 YOLO detections:', detections.map((det) => ({
         class: det.className ?? det.class,
         confidence: Number(det.confidence.toFixed(3)),
         box: {
@@ -306,12 +359,20 @@ export default function CameraFullScreen() {
           h: Number(det.height.toFixed(1)),
         },
       })));
-    } catch (error) {
-      console.error('Inference error:', error);
-    } finally {
       setIsInferencing(false);
       isInferencingShared.value = false;
-    }
+    }).catch((error) => {
+      // Safety check: Don't update state if component is unmounted
+      if (!isMountedRef.current) {
+        return;
+      }
+      
+      const errorTime = Date.now();
+      const totalTime = errorTime - requestStartTime;
+      console.error(`❌ [Inference Error] after ${totalTime}ms:`, error);
+      setIsInferencing(false);
+      isInferencingShared.value = false;
+    });
   };
 
   const runInferenceOnJS = useRunOnJS(handleInferenceOnJS, [isModelLoaded, isInferencing]);
@@ -328,7 +389,7 @@ export default function CameraFullScreen() {
     padX: number,
     padY: number
   ) => {
-    const size = 640;
+    const size = getYOLOInputSize(); // Use configurable input size
     const output = new Array<number>(size * size * 3).fill(0);
     for (let y = 0; y < height; y += 1) {
       for (let x = 0; x < width; x += 1) {
@@ -347,17 +408,18 @@ export default function CameraFullScreen() {
       return;
     }
     setIsSnapshotting(true);
+    isSnapshottingShared.value = true; // Prevent frame processor from triggering
     try {
       const photo = await cameraRef.current.takePhoto({});
       const photoUri = photo.path.startsWith('file://') ? photo.path : `file://${photo.path}`;
       const origWidth = Number.isFinite(photo.width) ? photo.width : 0;
       const origHeight = Number.isFinite(photo.height) ? photo.height : 0;
       const maxSide = Math.max(origWidth, origHeight);
-      const scale = maxSide > 0 ? 640 / maxSide : 1;
+      const scale = maxSide > 0 ? YOLO_INPUT_SIZE / maxSide : 1;
       const resizedWidth = Math.max(1, Math.round(origWidth * scale));
       const resizedHeight = Math.max(1, Math.round(origHeight * scale));
-      const padX = Math.floor((640 - resizedWidth) / 2);
-      const padY = Math.floor((640 - resizedHeight) / 2);
+      const padX = Math.floor((YOLO_INPUT_SIZE - resizedWidth) / 2);
+      const padY = Math.floor((YOLO_INPUT_SIZE - resizedHeight) / 2);
       const resized = await ImageManipulator.manipulateAsync(
         photoUri,
         [{ resize: { width: resizedWidth, height: resizedHeight } }],
@@ -368,20 +430,21 @@ export default function CameraFullScreen() {
       }
       const rgbData = decodeJpegToRgb(resized.base64);
       const padded = padToSquare(Array.from(rgbData), resizedWidth, resizedHeight, padX, padY);
-      const results = await runYoloInference(padded, 640, 640);
-      const corrected = results.map((det) => {
-        const x = (det.x - padX) / scale;
-        const y = (det.y - padY) / scale;
-        const width = det.width / scale;
-        const height = det.height / scale;
-        return {
-          ...det,
-          x: Math.max(0, Math.min(origWidth - 1, x)),
-          y: Math.max(0, Math.min(origHeight - 1, y)),
-          width: Math.max(1, Math.min(origWidth, width)),
-          height: Math.max(1, Math.min(origHeight, height)),
-        };
-      });
+      
+      // Use inference queue (non-blocking, but we wait for snapshot result)
+      const results = await inferenceQueue.enqueue(
+        padded,
+        origWidth,
+        origHeight,
+        resizedWidth,
+        resizedHeight,
+        padX,
+        padY,
+        scale
+      );
+      
+      // Results are already corrected by the queue
+      const corrected = results;
       const runAt = Date.now();
       addSnapshot({
         id: `snap-${runAt}`,
@@ -395,6 +458,7 @@ export default function CameraFullScreen() {
       console.error('Snapshot inference failed:', error);
     } finally {
       setIsSnapshotting(false);
+      isSnapshottingShared.value = false; // Re-enable frame processor
     }
   };
 
@@ -418,18 +482,18 @@ export default function CameraFullScreen() {
     }
 
     // Handle single-shot inference (triggered by button)
-    if (singleShotRequestId.value !== lastProcessedRequestId.value) {
-      if (isInferencingShared.value) {
-        return; // Skip if already inferencing
-      }
+    // Skip if snapshot is in progress (handleSnapshot handles it)
+    if (singleShotRequestId.value !== lastProcessedRequestId.value && !isSnapshottingShared.value) {
+      // Don't block on isInferencing - queue handles frame dropping
       lastProcessedRequestId.value = singleShotRequestId.value;
       
       const maxSide = frame.width > frame.height ? frame.width : frame.height;
-      const scale = 640 / maxSide;
+      const inputSize = yoloInputSize.value; // Access shared value in worklet
+      const scale = inputSize / maxSide;
       const resizedWidth = Math.round(frame.width * scale);
       const resizedHeight = Math.round(frame.height * scale);
-      const padX = Math.floor((640 - resizedWidth) / 2);
-      const padY = Math.floor((640 - resizedHeight) / 2);
+      const padX = Math.floor((inputSize - resizedWidth) / 2);
+      const padY = Math.floor((inputSize - resizedHeight) / 2);
 
       const rgbData = resizePlugin.resize(frame, {
         scale: { width: resizedWidth, height: resizedHeight },
@@ -457,20 +521,33 @@ export default function CameraFullScreen() {
       return;
     }
 
-    // Handle live inference (throttled to 3 FPS = every 333ms)
-    if (isLiveInferenceShared.value && !isInferencingShared.value) {
+    // Handle live inference - MAXED OUT to match camera frame rate
+    // Non-blocking queue allows maximum rate - queue will drop old frames automatically
+    // Don't check isInferencingShared - queue handles concurrency and frame dropping
+    if (isLiveInferenceShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = 5000; // 200ms for 5 FPS
+      // 33ms = ~30 FPS (matches camera), 16ms = 60 FPS (if device can handle)
+      // Queue will automatically drop frames if inference can't keep up
+      const inferenceInterval = 33; // 33ms = ~30 FPS (MAXED OUT)
       
       if (timeSinceLastInference >= inferenceInterval) {
+        const intervalActual = timeSinceLastInference;
         lastLiveInferenceTime.value = now;
+        
+        // Log timing: interval between inference requests
+        console.log(`📊 [Frame Timing]`, {
+          interval: `${intervalActual}ms`,
+          target: `${inferenceInterval}ms`,
+          fps: `${Math.round(1000 / intervalActual)} FPS`,
+        });
 
         const maxSide = frame.width > frame.height ? frame.width : frame.height;
-        const scale = 640 / maxSide;
+        const inputSize = yoloInputSize.value; // Access shared value in worklet
+        const scale = inputSize / maxSide;
         const resizedWidth = Math.round(frame.width * scale);
         const resizedHeight = Math.round(frame.height * scale);
-        const padX = Math.floor((640 - resizedWidth) / 2);
-        const padY = Math.floor((640 - resizedHeight) / 2);
+        const padX = Math.floor((inputSize - resizedWidth) / 2);
+        const padY = Math.floor((inputSize - resizedHeight) / 2);
 
         const rgbData = resizePlugin.resize(frame, {
           scale: { width: resizedWidth, height: resizedHeight },
@@ -537,7 +614,7 @@ export default function CameraFullScreen() {
         photo={true}
       />
       {/* Detection boxes overlay */}
-      {detections.length > 0 && previewSize.width > 0 && previewSize.height > 0 && lastFrameSize.width > 0 && lastFrameSize.height > 0 && (
+      {showBoxes && detections.length > 0 && previewSize.width > 0 && previewSize.height > 0 && lastFrameSize.width > 0 && lastFrameSize.height > 0 && (
         <View style={styles.detectionOverlay} pointerEvents="none">
           {detections.map((det, idx) => {
             // Calculate scale factor from frame to preview
@@ -596,7 +673,7 @@ export default function CameraFullScreen() {
           <ThemedText style={styles.modelStatus}>Model Loaded ✓</ThemedText>
         )}
         <View style={styles.toggleContainer} pointerEvents="auto">
-          <ThemedText style={styles.toggleLabel}>Live Inference (5 FPS)</ThemedText>
+          <ThemedText style={styles.toggleLabel}>Live Inference</ThemedText>
           <Switch
             value={isLiveInference}
             onValueChange={(value) => {
@@ -609,6 +686,15 @@ export default function CameraFullScreen() {
             disabled={!isModelLoaded}
             trackColor={{ false: '#767577', true: '#81b0ff' }}
             thumbColor={isLiveInference ? '#f5dd4b' : '#f4f3f4'}
+          />
+        </View>
+        <View style={styles.toggleContainer} pointerEvents="auto">
+          <ThemedText style={styles.toggleLabel}>Show Boxes</ThemedText>
+          <Switch
+            value={showBoxes}
+            onValueChange={setShowBoxes}
+            trackColor={{ false: '#767577', true: '#81b0ff' }}
+            thumbColor={showBoxes ? '#f5dd4b' : '#f4f3f4'}
           />
         </View>
         <Pressable

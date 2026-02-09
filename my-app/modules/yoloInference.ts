@@ -1,6 +1,6 @@
 import { startTimer, withProfiling } from '@/lib/profiler';
 import { TFLite, isTFLiteAvailable } from '@/modules/TFLiteModule';
-import { getYOLOInputShape, parseYOLOOutput, type Detection } from '@/modules/yoloUtils';
+import { getYOLOInputShape, getYOLOInputSize, parseYOLOOutput, type Detection } from '@/modules/yoloUtils';
 
 type PreprocessOptions = {
   normalize?: boolean;
@@ -16,31 +16,41 @@ let hasLoggedOutputStats = false;
 type OutputLayout = 'predMajor' | 'classMajor';
 
 const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): number[] => {
-  // Working version: normalize to 0-1 range for Float32
+  // Optimized: Remove min/max tracking (saves ~100ms)
   const normalize = options.normalize ?? true;
   const rgbOrder = options.rgbOrder ?? true;
   const out: number[] = new Array(rgbData.length);
-  let min = 255;
-  let max = 0;
+  const inv255 = 1.0 / 255.0; // Pre-calculate division
 
-  for (let i = 0; i < rgbData.length; i += 3) {
-    const r = rgbData[i];
-    const g = rgbData[i + 1];
-    const b = rgbData[i + 2];
-    const rOut = rgbOrder ? r : b;
-    const bOut = rgbOrder ? b : r;
-    const gOut = g;
-    // Normalize to 0-1 range (working version)
-    out[i] = normalize ? rOut / 255.0 : rOut;
-    out[i + 1] = normalize ? gOut / 255.0 : gOut;
-    out[i + 2] = normalize ? bOut / 255.0 : bOut;
-    
-    if (rOut < min) min = rOut;
-    if (gOut < min) min = gOut;
-    if (bOut < min) min = bOut;
-    if (rOut > max) max = rOut;
-    if (gOut > max) max = gOut;
-    if (bOut > max) max = bOut;
+  // Optimized loop: single pass, no conditionals in hot path
+  if (normalize && rgbOrder) {
+    // Fast path: normalize + RGB order (most common)
+    for (let i = 0; i < rgbData.length; i += 3) {
+      out[i] = rgbData[i] * inv255;
+      out[i + 1] = rgbData[i + 1] * inv255;
+      out[i + 2] = rgbData[i + 2] * inv255;
+    }
+  } else if (normalize) {
+    // Normalize + BGR order
+    for (let i = 0; i < rgbData.length; i += 3) {
+      out[i] = rgbData[i + 2] * inv255;     // B->R
+      out[i + 1] = rgbData[i + 1] * inv255; // G->G
+      out[i + 2] = rgbData[i] * inv255;     // R->B
+    }
+  } else if (rgbOrder) {
+    // No normalize + RGB order
+    for (let i = 0; i < rgbData.length; i += 3) {
+      out[i] = rgbData[i];
+      out[i + 1] = rgbData[i + 1];
+      out[i + 2] = rgbData[i + 2];
+    }
+  } else {
+    // No normalize + BGR order
+    for (let i = 0; i < rgbData.length; i += 3) {
+      out[i] = rgbData[i + 2];
+      out[i + 1] = rgbData[i + 1];
+      out[i + 2] = rgbData[i];
+    }
   }
 
   if (!hasLoggedInputStats) {
@@ -48,9 +58,8 @@ const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>
     console.log('🔎 YOLO input stats', {
       normalize,
       rgbOrder,
-      rawMin: min,
-      rawMax: max,
       firstPixel: [rgbData[0], rgbData[1], rgbData[2]],
+      optimized: true,
     });
   }
 
@@ -74,9 +83,18 @@ export const runYoloInference = async (
   // YOLO input shape [1, 640, 640, 3]
   const inputShape = getYOLOInputShape();
   
+  // Track native inference time
+  const nativeInferenceStart = Date.now();
   const endInferenceTimer = startTimer('TFLite.runInference');
   const output = await TFLite.runInference(normalizedInput, inputShape);
   endInferenceTimer();
+  const nativeInferenceTime = Date.now() - nativeInferenceStart;
+  
+  // Log native inference timing
+  console.log(`🔥 [Native Inference]`, {
+    time: `${nativeInferenceTime}ms`,
+    inputSize: normalizedInput.length,
+  });
   
   if (!output) {
     console.warn('TFLite returned no output');
@@ -86,7 +104,7 @@ export const runYoloInference = async (
   const normalizedOutput = normalizeOutputLayout(output);
   logOutputStats(normalizedOutput);
   return parseYOLOOutput(normalizedOutput, frameWidth, frameHeight, {
-    inputSize: 640,
+    inputSize: getYOLOInputSize(), // Use configurable input size
     numClasses: 2, // basketball and rim
     confidenceThreshold: 0.25,
     nmsThreshold: 0.4,
