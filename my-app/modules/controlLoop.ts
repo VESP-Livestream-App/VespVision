@@ -13,7 +13,7 @@ import type { Detection } from './yoloUtils';
 
 export interface ControlLoopConfig {
   fieldOfView?: number;        // Camera field of view in degrees (default: 70)
-  servoSpeed?: number;          // Servo speed in degrees/second (default: 60)
+  servoSpeed?: number;          // Servo speed in degrees/second (default: 40)
   controllerGain?: number;      // Controller gain factor (default: 25.0)
   frameWidth?: number;          // Camera frame width in pixels (default: 640)
   planeDegrees?: number;        // Total plane range in degrees (default: 180)
@@ -53,7 +53,7 @@ export class ControlLoop {
   constructor(config: ControlLoopConfig = {}) {
     const {
       fieldOfView = 70,
-      servoSpeed = 60.0,
+      servoSpeed = 40.0,
       controllerGain = 25.0,
       frameWidth = 640,
       planeDegrees = 180,
@@ -95,7 +95,7 @@ export class ControlLoop {
     // pixelX = 0 -> angle = 0
     // pixelX = frameWidth -> angle = planeDegrees
     const normalized = pixelX / this.frameWidth;
-    return normalized * this.planeDegrees;
+    return normalized * this.fieldOfView;
   }
 
   /**
@@ -193,11 +193,11 @@ export class ControlLoop {
     
     // Ball detected - calculate position
     const ballCenterX = ballDetection.x + ballDetection.width / 2;
-    const targetAngle = this.pixelToAngle(ballCenterX);
+    const fovAngle = this.pixelToAngle(ballCenterX);
     
     console.log('⚽ [Control] Ball detected');
     console.log(`   Ball center X: ${ballCenterX.toFixed(1)}px`);
-    console.log(`   Target angle: ${targetAngle.toFixed(2)}°`);
+    console.log(`   Target angle: ${(currentServoPos - this.fieldOfView / 2 + fovAngle).toFixed(2)}°`);
     console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
     
     // Check if target is visible
@@ -213,14 +213,14 @@ export class ControlLoop {
     }
     
     // Calculate error: distance from center of image
-    // Center of image = currentServoPos
-    // Target location = targetAngle
+    // Center of image = currentServoPos - this.fieldOfView / 2
+    // Target location = fovAngle
     // Error = Target - Center
-    const errorDegrees = targetAngle - currentServoPos;
+    const errorDegrees = fovAngle - this.fieldOfView / 2;
     this.state.lastError = errorDegrees;
     
     // Normalize error to [-1.0, 1.0] range based on plane dimensions
-    const normalizedError = errorDegrees / this.planeDegrees;
+    const normalizedError = errorDegrees / (this.fieldOfView / 2);
     this.state.normalizedError = normalizedError;
     
     // Compute control signal

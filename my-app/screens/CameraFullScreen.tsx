@@ -174,7 +174,7 @@ export default function CameraFullScreen() {
     // Initialize control loop with default config 
     controlLoopRef.current = new ControlLoop({
       fieldOfView: 70,
-      servoSpeed: 60.0,
+      servoSpeed: 40.0,
       controllerGain: 25.0,
       frameWidth: lastFrameSize.width || 640,
       planeDegrees: 180,
@@ -204,7 +204,7 @@ export default function CameraFullScreen() {
       // Recreate control loop with new frame width
       controlLoopRef.current = new ControlLoop({
         fieldOfView: 70,
-        servoSpeed: 60.0,
+        servoSpeed: 40.0,
         controllerGain: 25.0,
         frameWidth: lastFrameSize.width,
         planeDegrees: 180,
@@ -460,7 +460,7 @@ export default function CameraFullScreen() {
     // Handle live inference (throttled to 3 FPS = every 333ms)
     if (isLiveInferenceShared.value && !isInferencingShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = 5000; // 200ms for 5 FPS
+      const inferenceInterval = 10000; // 200ms for 5 FPS
       
       if (timeSinceLastInference >= inferenceInterval) {
         lastLiveInferenceTime.value = now;

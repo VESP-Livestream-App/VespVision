@@ -15,11 +15,11 @@ let hasLoggedOutputStats = false;
 
 type OutputLayout = 'predMajor' | 'classMajor';
 
-const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): number[] => {
-  // Working version: normalize to 0-1 range for Float32
-  const normalize = options.normalize ?? true;
+const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): Uint8Array => {
+  // Using Uint8Array to prevent bridge crash with large arrays. 
+  // IMPORTANT: This assumes the model expects INT8 (0-255) inputs.
   const rgbOrder = options.rgbOrder ?? true;
-  const out: number[] = new Array(rgbData.length);
+  const out = new Uint8Array(rgbData.length);
   let min = 255;
   let max = 0;
 
@@ -30,10 +30,12 @@ const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>
     const rOut = rgbOrder ? r : b;
     const bOut = rgbOrder ? b : r;
     const gOut = g;
-    // Normalize to 0-1 range (working version)
-    out[i] = normalize ? rOut / 255.0 : rOut;
-    out[i + 1] = normalize ? gOut / 255.0 : gOut;
-    out[i + 2] = normalize ? bOut / 255.0 : bOut;
+    
+    // Pass raw 0-255 values. 
+    // If model needs float, this will fail detection but won't crash apps.
+    out[i] = rOut;
+    out[i + 1] = gOut;
+    out[i + 2] = bOut;
     
     if (rOut < min) min = rOut;
     if (gOut < min) min = gOut;
@@ -46,7 +48,7 @@ const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>
   if (!hasLoggedInputStats) {
     hasLoggedInputStats = true;
     console.log('🔎 YOLO input stats', {
-      normalize,
+      normalize: options.normalize,
       rgbOrder,
       rawMin: min,
       rawMax: max,
