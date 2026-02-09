@@ -69,6 +69,7 @@ export default function CameraFullScreen() {
   const [fps, setFps] = useState(0);
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('landscape');
   const [isLiveInference, setIsLiveInference] = useState(false);
+  const [measuredDetections, setMeasuredDetections] = useState<Detection[]>([]);
   const singleShotRequestId = useSharedValue(0);
   const lastProcessedRequestId = useSharedValue(0);
   const fpsFrameCount = useSharedValue(0);
@@ -78,6 +79,27 @@ export default function CameraFullScreen() {
   const lastLiveInferenceTime = useSharedValue(0);
   const isInferencingShared = useSharedValue(false);
   const trackerRef = useRef(createByteTrackLite());
+  const predictedDetections = useMemo(
+    () => detections.filter((det) => det.isPredicted),
+    [detections]
+  );
+  const movementDetections = useMemo(() => {
+    if (lastFrameSize.width <= 0) {
+      return measuredDetections;
+    }
+    if (predictedDetections.length === 0) {
+      return measuredDetections;
+    }
+    const edgeRatio = 0.2;
+    const edgeMargin = lastFrameSize.width * edgeRatio;
+    const isNearEdge = (det: Detection) => {
+      const centerX = det.x + det.width / 2;
+      return centerX <= edgeMargin || centerX >= lastFrameSize.width - edgeMargin;
+    };
+    const edgeSource = measuredDetections.length > 0 ? measuredDetections : predictedDetections;
+    const nearEdge = edgeSource.some(isNearEdge);
+    return nearEdge ? predictedDetections : measuredDetections;
+  }, [measuredDetections, predictedDetections, lastFrameSize.width]);
 
   // BLE integration for control loop
   const {
@@ -205,6 +227,7 @@ export default function CameraFullScreen() {
   useEffect(() => {
     if (!isLiveInference) {
       trackerRef.current.reset();
+      setMeasuredDetections([]);
     }
   }, [isLiveInference]);
 
@@ -258,7 +281,7 @@ export default function CameraFullScreen() {
       return;
     }
 
-    const turnSignalData = getTurnSignalForBLE(detections, lastFrameSize.width);
+    const turnSignalData = getTurnSignalForBLE(movementDetections, lastFrameSize.width);
     if (turnSignalData === null) {
       return; // No update needed
     }
@@ -267,7 +290,7 @@ export default function CameraFullScreen() {
     sendTurnSignal(turnSignalData.value, turnSignalData.hasBall).catch((error) => {
       console.error('❌ Failed to send turn signal via BLE:', error);
     });
-  }, [detections, lastFrameSize.width]);
+  }, [movementDetections, lastFrameSize.width]);
 
   // Control loop: process detections and send servo commands
   useEffect(() => {
@@ -281,7 +304,7 @@ export default function CameraFullScreen() {
 
     // Run control loop update
     const command = controlLoopRef.current.update(
-      detections,
+      movementDetections,
       currentPos,
       lastFrameSize.width
     );
@@ -292,7 +315,7 @@ export default function CameraFullScreen() {
         console.error('❌ Failed to send control command via BLE:', error);
       });
     }
-  }, [detections]);
+  }, [movementDetections]);
 
   const handleInferenceOnJS = async (
     rgbData: number[],
@@ -339,6 +362,7 @@ export default function CameraFullScreen() {
         height: frameHeight,
       });
       setDetections(tracked);
+      setMeasuredDetections(tracked);
       setBallSide(getBallSide(tracked, frameWidth));
       setLastFrameSize({ width: frameWidth, height: frameHeight });
       setLastInferenceAt(runAt);
