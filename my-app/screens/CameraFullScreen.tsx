@@ -342,6 +342,14 @@ export default function CameraFullScreen() {
     []
   );
 
+  useEffect(() => {
+    if (runYOLOFromFramePlugin) {
+      console.log('LOG  ✅ Native frame plugin (runYOLOFromFrame) loaded — using fast inference path');
+    } else {
+      console.log('LOG  ⚠️ Native frame plugin not available — using bridge path (slower). Rebuild iOS app with plugin.');
+    }
+  }, [runYOLOFromFramePlugin]);
+
   const padToSquare = (
     rgbData: number[],
     width: number,

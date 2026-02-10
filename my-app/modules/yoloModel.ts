@@ -3,7 +3,7 @@ import { TFLite, isTFLiteAvailable } from '@/modules/TFLiteModule';
 import { CoreML, isCoreMLAvailable } from '@/modules/CoreMLModule';
 
 export const YOLO_MODEL_FILENAME = 'newer_best_int8.tflite';
-export const CORE_ML_MODEL_NAME = 'new_best';
+export const CORE_ML_MODEL_NAME = 'ball_detection';
 
 export type InferenceBackend = 'coreml' | 'tflite' | null;
 let activeBackend: InferenceBackend = null;
