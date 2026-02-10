@@ -7,11 +7,76 @@ private struct PixelBufferError: Error {
   let message: String
 }
 
+private struct TimingStat {
+  var count: Int = 0
+  var totalMs: Double = 0
+  var minMs: Double = .infinity
+  var maxMs: Double = 0
+
+  mutating func record(_ ms: Double) {
+    count += 1
+    totalMs += ms
+    if ms < minMs { minMs = ms }
+    if ms > maxMs { maxMs = ms }
+  }
+
+  var avgMs: Double { count > 0 ? totalMs / Double(count) : 0 }
+}
+
 public class CoreMLModule: Module {
   private var model: MLModel?
 
+  /// Shared reference so the Frame Processor Plugin can call native inference without going through the bridge.
+  private static weak var sharedInstance: CoreMLModule?
+
+  private static var arrayPathPixelBuffer = TimingStat()
+  private static var arrayPathInference = TimingStat()
+  private static var framePathInference = TimingStat()
+  private static let reportInterval = 10
+
+  private static func recordArrayPath(pixelBufferMs: Double, inferenceMs: Double) {
+    arrayPathPixelBuffer.record(pixelBufferMs)
+    arrayPathInference.record(inferenceMs)
+    if arrayPathInference.count % reportInterval == 0 {
+      printNativeTimingReport()
+    }
+  }
+
+  private static func recordFramePath(inferenceMs: Double) {
+    framePathInference.record(inferenceMs)
+    if framePathInference.count % reportInterval == 0 {
+      printNativeTimingReport()
+    }
+  }
+
+  private static func printNativeTimingReport() {
+    print("LOG  📊 === CORE ML NATIVE TIMING REPORT ===")
+    print("LOG  | Function                     | Count | Avg(ms) | Max(ms) | Total(s) |")
+    print("LOG  |------------------------------|-------|---------|---------|----------|")
+    if arrayPathPixelBuffer.count > 0 {
+      let name = "arrayPath.pixelBuffer".padding(toLength: 28, withPad: " ", startingAt: 0)
+      print(String(format: "LOG  | %@ | %5d | %7.1f | %7.1f | %8.2f |",
+        name, arrayPathPixelBuffer.count, arrayPathPixelBuffer.avgMs, arrayPathPixelBuffer.maxMs, arrayPathPixelBuffer.totalMs / 1000))
+    }
+    if arrayPathInference.count > 0 {
+      let name = "arrayPath.inference".padding(toLength: 28, withPad: " ", startingAt: 0)
+      print(String(format: "LOG  | %@ | %5d | %7.1f | %7.1f | %8.2f |",
+        name, arrayPathInference.count, arrayPathInference.avgMs, arrayPathInference.maxMs, arrayPathInference.totalMs / 1000))
+    }
+    if framePathInference.count > 0 {
+      let name = "framePath.inference".padding(toLength: 28, withPad: " ", startingAt: 0)
+      print(String(format: "LOG  | %@ | %5d | %7.1f | %7.1f | %8.2f |",
+        name, framePathInference.count, framePathInference.avgMs, framePathInference.maxMs, framePathInference.totalMs / 1000))
+    }
+    print("LOG  ========================================")
+  }
+
   public func definition() -> ModuleDefinition {
     Name("CoreMLModule")
+
+    OnCreate {
+      CoreMLModule.sharedInstance = self
+    }
 
     AsyncFunction("loadModel") { (modelName: String, promise: Promise) in
       DispatchQueue.global(qos: .userInitiated).async {
@@ -44,6 +109,7 @@ public class CoreMLModule: Module {
           return
         }
         do {
+          let t0 = CFAbsoluteTimeGetCurrent()
           let floatData = inputArray.map { Float($0) }
           let pixelBufferResult = Self.floatRGBToCVPixelBuffer(floatData: floatData, shape: inputShape)
           let pixelBuffer: CVPixelBuffer
@@ -54,10 +120,16 @@ public class CoreMLModule: Module {
             promise.reject("INFERENCE_ERROR", err.message)
             return
           }
+          let t1 = CFAbsoluteTimeGetCurrent()
           let request = VNCoreMLRequest(model: try VNCoreMLModel(for: model))
           request.imageCropAndScaleOption = .scaleFill
           let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
           try handler.perform([request])
+          let t2 = CFAbsoluteTimeGetCurrent()
+          let pixelBufferMs = (t1 - t0) * 1000
+          let inferenceMs = (t2 - t1) * 1000
+          Self.recordArrayPath(pixelBufferMs: pixelBufferMs, inferenceMs: inferenceMs)
+          print(String(format: "LOG  ⏱ Core ML native: pixelBuffer=%.1f ms  inference=%.1f ms  total=%.1f ms", pixelBufferMs, inferenceMs, pixelBufferMs + inferenceMs))
 
           if let observations = request.results as? [VNRecognizedObjectObservation] {
             var result: [Double] = []
@@ -92,6 +164,45 @@ public class CoreMLModule: Module {
     AsyncFunction("close") { (promise: Promise) in
       self.model = nil
       promise.resolve(nil)
+    }
+  }
+
+  /// Called by the Frame Processor Plugin with a 640×640 CVPixelBuffer (no bridge). Returns raw output or nil.
+  public static func runInferenceFromPixelBuffer(_ pixelBuffer: CVPixelBuffer) -> [Double]? {
+    guard let model = sharedInstance?.model else { return nil }
+    do {
+      let t0 = CFAbsoluteTimeGetCurrent()
+      let request = VNCoreMLRequest(model: try VNCoreMLModel(for: model))
+      request.imageCropAndScaleOption = .scaleFill
+      let handler = VNImageRequestHandler(cvPixelBuffer: pixelBuffer, options: [:])
+      try handler.perform([request])
+      let inferenceMs = (CFAbsoluteTimeGetCurrent() - t0) * 1000
+      Self.recordFramePath(inferenceMs: inferenceMs)
+      print(String(format: "LOG  ⏱ Core ML (from frame) inference=%.1f ms", inferenceMs))
+
+      if let observations = request.results as? [VNRecognizedObjectObservation] {
+        var result: [Double] = []
+        for obs in observations {
+          let box = obs.boundingBox
+          result.append(contentsOf: [
+            Double(box.origin.x),
+            Double(1 - box.origin.y - box.height),
+            Double(box.origin.x + box.width),
+            Double(1 - box.origin.y - box.height + box.height),
+            Double(obs.confidence),
+            Double(Int(obs.labels.first?.identifier ?? "0") ?? 0),
+          ])
+        }
+        return result
+      }
+      if let obsResults = request.results as? [VNCoreMLFeatureValueObservation],
+         let first = obsResults.first?.featureValue.multiArrayValue {
+        return (0..<first.count).map { first[$0].doubleValue }
+      }
+      return nil
+    } catch {
+      print("❌ Core ML runInferenceFromPixelBuffer: \(error.localizedDescription)")
+      return nil
     }
   }
 

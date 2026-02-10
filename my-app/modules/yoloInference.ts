@@ -86,7 +86,8 @@ export const runYoloInference = async (
   });
 };
 
-const normalizeOutputLayout = (output: number[]): number[] => {
+/** Exported for native-frame inference path (plugin returns raw output). */
+export const normalizeOutputLayout = (output: number[]): number[] => {
   const numPredictions = 8400;
   if (output.length % numPredictions !== 0) {
     return output;
