@@ -1,5 +1,7 @@
 import { startTimer, withProfiling } from '@/lib/profiler';
 import { TFLite, isTFLiteAvailable } from '@/modules/TFLiteModule';
+import { CoreML } from '@/modules/CoreMLModule';
+import { getActiveBackend } from '@/modules/yoloModel';
 import { getYOLOInputShape, parseYOLOOutput, type Detection } from '@/modules/yoloUtils';
 
 type PreprocessOptions = {
@@ -53,23 +55,22 @@ export const runYoloInference = async (
   frameHeight: number,
   options: PreprocessOptions = {}
 ): Promise<Detection[]> => {
-  if (!isTFLiteAvailable() || !TFLite) {
-    console.warn('TFLite module is not available for inference');
+  const backend = getActiveBackend();
+  const inferModule = backend === 'coreml' ? CoreML : TFLite;
+  if (!inferModule) {
+    console.warn('No inference backend available (Core ML or TFLite)');
     return [];
   }
 
-  // Normalize input data to [0, 1] range and optionally swap channels
   const normalizedInput = preprocessRgb(rgbData, options);
-
-  // YOLO input shape [1, 640, 640, 3]
   const inputShape = getYOLOInputShape();
-  
-  const endInferenceTimer = startTimer('TFLite.runInference');
-  const output = await TFLite.runInference(normalizedInput, inputShape);
+  const timerName = backend === 'coreml' ? 'CoreML.runInference' : 'TFLite.runInference';
+  const endInferenceTimer = startTimer(timerName);
+  const output = await inferModule.runInference(normalizedInput, inputShape);
   endInferenceTimer();
   
   if (!output) {
-    console.warn('TFLite returned no output');
+    console.warn('Inference returned no output');
     return [];
   }
 
