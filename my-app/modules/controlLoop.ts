@@ -8,13 +8,16 @@
  */
 
 import { Servo } from './servoController';
-import { SimpleController } from './simpleController';
+import { PIDController } from './pidController';
 import type { Detection } from './yoloUtils';
 
 export interface ControlLoopConfig {
   fieldOfView?: number;        // Camera field of view in degrees (default: 70)
-  servoSpeed?: number;          // Servo speed in degrees/second (default: 40)
-  controllerGain?: number;      // Controller gain factor (default: 25.0)
+  servoSpeed?: number;          // Servo speed in degrees/second (default: 60)
+  kp?: number;                  // Proportional gain (default: 25.0)
+  ki?: number;                  // Integral gain (default: 0.1)
+  kd?: number;                  // Derivative gain (default: 5.0)
+  derivativeBufferSize?: number; // Samples for derivative smoothing (default: 3)
   frameWidth?: number;          // Camera frame width in pixels (default: 640)
   planeDegrees?: number;        // Total plane range in degrees (default: 180)
   edgeViewRedundancyFactor?: number; // Edge buffer factor (default: 0.25)
@@ -34,9 +37,10 @@ export class ControlLoop {
   private readonly frameWidth: number;
   private readonly planeDegrees: number;
   private readonly edgeRedundancyFactor: number;
+  private readonly movementThreshold: number = 2.0;
   
   private readonly servo: Servo;
-  private readonly controller: SimpleController;
+  private readonly controller: PIDController;
   
   private state: ControlLoopState = {
     isTracking: true,
@@ -53,8 +57,11 @@ export class ControlLoop {
   constructor(config: ControlLoopConfig = {}) {
     const {
       fieldOfView = 70,
-      servoSpeed = 40.0,
-      controllerGain = 25.0,
+      servoSpeed = 60.0,
+      kp = 25.0,
+      ki = 0.1,
+      kd = 5.0,
+      derivativeBufferSize = 3,
       frameWidth = 640,
       planeDegrees = 180,
       edgeViewRedundancyFactor = 0.25,
@@ -73,7 +80,7 @@ export class ControlLoop {
       maxPos: planeDegrees,
     });
     
-    this.controller = new SimpleController({ gain: controllerGain });
+    this.controller = new PIDController({ kp, ki, kd, derivativeBufferSize });
   }
 
   /**
@@ -225,6 +232,10 @@ export class ControlLoop {
     // New Angle = Current Angle + Correction
     // Scale control signal to degrees (gain scaler = 1.0)
     const displacement = controlSignal * 1.0;
+    if (Math.abs(displacement) < this.movementThreshold) {
+      console.log(`   Displacement (${displacement.toFixed(2)}°) below threshold (${this.movementThreshold}°) - skipping update`);
+      return null;
+    }
     const newServoTarget = currentServoPos + displacement;
     
     // Clamp to valid range
