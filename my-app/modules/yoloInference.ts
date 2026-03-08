@@ -1,5 +1,7 @@
 import { startTimer, withProfiling } from '@/lib/profiler';
 import { TFLite, isTFLiteAvailable } from '@/modules/TFLiteModule';
+import { CoreML } from '@/modules/CoreMLModule';
+import { getActiveBackend } from '@/modules/yoloModel';
 import { getYOLOInputShape, parseYOLOOutput, type Detection } from '@/modules/yoloUtils';
 
 type PreprocessOptions = {
@@ -16,12 +18,12 @@ let hasLoggedOutputStats = false;
 type OutputLayout = 'predMajor' | 'classMajor';
 
 const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>, options: PreprocessOptions): number[] => {
-  // Working version: normalize to 0-1 range for Float32
-  const normalize = options.normalize ?? true;
+  // Output plain number[] 0-1 so the native bridge receives [Double] on iOS and List<Double> on Android.
+  // Passing Uint8Array can cause iOS bridge to crash or deserialize incorrectly.
   const rgbOrder = options.rgbOrder ?? true;
+  const normalize = options.normalize ?? true;
+  const scale = normalize ? 1 / 255 : 1;
   const out: number[] = new Array(rgbData.length);
-  let min = 255;
-  let max = 0;
 
   for (let i = 0; i < rgbData.length; i += 3) {
     const r = rgbData[i];
@@ -30,17 +32,9 @@ const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>
     const rOut = rgbOrder ? r : b;
     const bOut = rgbOrder ? b : r;
     const gOut = g;
-    // Normalize to 0-1 range (working version)
-    out[i] = normalize ? rOut / 255.0 : rOut;
-    out[i + 1] = normalize ? gOut / 255.0 : gOut;
-    out[i + 2] = normalize ? bOut / 255.0 : bOut;
-    
-    if (rOut < min) min = rOut;
-    if (gOut < min) min = gOut;
-    if (bOut < min) min = bOut;
-    if (rOut > max) max = rOut;
-    if (gOut > max) max = gOut;
-    if (bOut > max) max = bOut;
+    out[i] = rOut * scale;
+    out[i + 1] = gOut * scale;
+    out[i + 2] = bOut * scale;
   }
 
   if (!hasLoggedInputStats) {
@@ -48,9 +42,7 @@ const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>
     console.log('🔎 YOLO input stats', {
       normalize,
       rgbOrder,
-      rawMin: min,
-      rawMax: max,
-      firstPixel: [rgbData[0], rgbData[1], rgbData[2]],
+      firstPixel: [out[0], out[1], out[2]],
     });
   }
 
@@ -63,23 +55,22 @@ export const runYoloInference = async (
   frameHeight: number,
   options: PreprocessOptions = {}
 ): Promise<Detection[]> => {
-  if (!isTFLiteAvailable() || !TFLite) {
-    console.warn('TFLite module is not available for inference');
+  const backend = getActiveBackend();
+  const inferModule = backend === 'coreml' ? CoreML : TFLite;
+  if (!inferModule) {
+    console.warn('No inference backend available (Core ML or TFLite)');
     return [];
   }
 
-  // Normalize input data to [0, 1] range and optionally swap channels
   const normalizedInput = preprocessRgb(rgbData, options);
-
-  // YOLO input shape [1, 640, 640, 3]
   const inputShape = getYOLOInputShape();
-  
-  const endInferenceTimer = startTimer('TFLite.runInference');
-  const output = await TFLite.runInference(normalizedInput, inputShape);
+  const timerName = backend === 'coreml' ? 'CoreML.runInference' : 'TFLite.runInference';
+  const endInferenceTimer = startTimer(timerName);
+  const output = await inferModule.runInference(normalizedInput, inputShape);
   endInferenceTimer();
   
   if (!output) {
-    console.warn('TFLite returned no output');
+    console.warn('Inference returned no output');
     return [];
   }
 
@@ -95,7 +86,8 @@ export const runYoloInference = async (
   });
 };
 
-const normalizeOutputLayout = (output: number[]): number[] => {
+/** Exported for native-frame inference path (plugin returns raw output). */
+export const normalizeOutputLayout = (output: number[]): number[] => {
   const numPredictions = 8400;
   if (output.length % numPredictions !== 0) {
     return output;

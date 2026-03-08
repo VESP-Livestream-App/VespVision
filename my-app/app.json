@@ -25,7 +25,10 @@
           "UIInterfaceOrientationPortraitUpsideDown",
           "UIInterfaceOrientationLandscapeLeft",
           "UIInterfaceOrientationLandscapeRight"
-        ]
+        ],
+        "NSBluetoothAlwaysUsageDescription": "Vesp Vision needs Bluetooth to connect to the ball-tracking servo controller.",
+        "NSBluetoothPeripheralUsageDescription": "Vesp Vision needs Bluetooth to connect to the ball-tracking servo controller.",
+        "NSLocationWhenInUseUsageDescription": "Vesp Vision needs location access to scan for nearby Bluetooth devices."
       }
     },
     "android": {
@@ -54,6 +57,7 @@
     },
     "plugins": [
       "./plugins/withAndroidAssets",
+      "./plugins/withYOLOFrameProcessorPlugin",
       "expo-router",
       [
         "expo-splash-screen",
@@ -74,6 +78,15 @@
           "enableMicrophonePermission": true,
           "microphonePermissionText": "Vesp Vision needs access to your Microphone.",
           "enableFrameProcessors": true
+        }
+      ],
+      [
+        "react-native-permissions",
+        {
+          "iosPermissions": [
+            "Bluetooth",
+            "LocationWhenInUse"
+          ]
         }
       ]
     ],

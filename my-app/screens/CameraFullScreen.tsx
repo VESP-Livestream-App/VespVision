@@ -7,9 +7,10 @@ import { getBLEControlService } from '@/modules/bleControlService';
 import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
 import { ControlLoop } from '@/modules/controlLoop';
 import { addSnapshot } from '@/modules/snapshotStore';
-import { runYoloInference } from '@/modules/yoloInference';
+import { normalizeOutputLayout, runYoloInference } from '@/modules/yoloInference';
 import { closeYoloModel, loadYoloModel } from '@/modules/yoloModel';
 import type { Detection } from '@/modules/yoloUtils';
+import { parseYOLOOutput } from '@/modules/yoloUtils';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImageManipulator from 'expo-image-manipulator';
 import { useRouter } from 'expo-router';
@@ -22,6 +23,7 @@ import {
   useCameraDevice,
   useCameraPermission,
   useFrameProcessor,
+  VisionCameraProxy,
 } from 'react-native-vision-camera';
 import { useRunOnJS, useSharedValue } from 'react-native-worklets-core';
 import { createResizePlugin } from 'vision-camera-resize-plugin';
@@ -174,7 +176,7 @@ export default function CameraFullScreen() {
     // Initialize control loop with default config 
     controlLoopRef.current = new ControlLoop({
       fieldOfView: 70,
-      servoSpeed: 60.0,
+      servoSpeed: 40.0,
       controllerGain: 25.0,
       frameWidth: lastFrameSize.width || 640,
       planeDegrees: 180,
@@ -204,7 +206,7 @@ export default function CameraFullScreen() {
       // Recreate control loop with new frame width
       controlLoopRef.current = new ControlLoop({
         fieldOfView: 70,
-        servoSpeed: 60.0,
+        servoSpeed: 40.0,
         controllerGain: 25.0,
         frameWidth: lastFrameSize.width,
         planeDegrees: 180,
@@ -256,29 +258,43 @@ export default function CameraFullScreen() {
   }, [detections]);
 
   const handleInferenceOnJS = async (
-    rgbData: number[],
+    payload: number[],
     frameWidth: number,
     frameHeight: number,
     resizedWidth: number,
     resizedHeight: number,
     padX: number,
     padY: number,
-    scale: number
+    scale: number,
+    fromNativeFrame: boolean
   ) => {
-    if (!isModelLoaded || isInferencing) {
+    if (!isModelLoaded) {
+      console.log('❌ Inference skipped: model not loaded');
       isInferencingShared.value = false;
       return;
     }
-    if (!rgbData || rgbData.length === 0) {
+    if (!payload || payload.length === 0) {
+      console.warn('❌ Inference skipped: empty payload');
       isInferencingShared.value = false;
-      console.warn('Skipping inference: empty RGB buffer');
       return;
     }
     setIsInferencing(true);
-    isInferencingShared.value = true;
     try {
-      const padded = padToSquare(rgbData, resizedWidth, resizedHeight, padX, padY);
-      const detections = await runYoloInference(padded, 640, 640);
+      let detections: Detection[];
+      if (fromNativeFrame) {
+        const normalized = normalizeOutputLayout(payload);
+        detections = parseYOLOOutput(normalized, 640, 640, {
+          inputSize: 640,
+          numClasses: 2,
+          confidenceThreshold: 0.25,
+          nmsThreshold: 0.4,
+          applySigmoid: false,
+          boxIsNormalized: true,
+        });
+      } else {
+        const padded = padToSquare(payload, resizedWidth, resizedHeight, padX, padY);
+        detections = await runYoloInference(padded, 640, 640);
+      }
       const corrected = detections.map((det) => {
         const x = (det.x - padX) / scale;
         const y = (det.y - padY) / scale;
@@ -307,19 +323,32 @@ export default function CameraFullScreen() {
         },
       })));
     } catch (error) {
-      console.error('Inference error:', error);
+      console.error('❌ Inference error:', error);
     } finally {
       setIsInferencing(false);
       isInferencingShared.value = false;
+      console.log('✅ Inference complete, flags reset');
     }
   };
 
-  const runInferenceOnJS = useRunOnJS(handleInferenceOnJS, [isModelLoaded, isInferencing]);
+  const runInferenceOnJS = useRunOnJS(handleInferenceOnJS, [isModelLoaded]);
   const updateFpsOnJS = useRunOnJS((value: number) => {
     setFps(value);
   }, []);
 
   const resizePlugin = useMemo(() => createResizePlugin(), []);
+  const runYOLOFromFramePlugin = useMemo(
+    () => VisionCameraProxy.initFrameProcessorPlugin('runYOLOFromFrame', {}),
+    []
+  );
+
+  useEffect(() => {
+    if (runYOLOFromFramePlugin) {
+      console.log('LOG  ✅ Native frame plugin (runYOLOFromFrame) loaded — using fast inference path');
+    } else {
+      console.log('LOG  ⚠️ Native frame plugin not available — using bridge path (slower). Rebuild iOS app with plugin.');
+    }
+  }, [runYOLOFromFramePlugin]);
 
   const padToSquare = (
     rgbData: number[],
@@ -423,7 +452,8 @@ export default function CameraFullScreen() {
         return; // Skip if already inferencing
       }
       lastProcessedRequestId.value = singleShotRequestId.value;
-      
+      isInferencingShared.value = true;
+
       const maxSide = frame.width > frame.height ? frame.width : frame.height;
       const scale = 640 / maxSide;
       const resizedWidth = Math.round(frame.width * scale);
@@ -431,12 +461,32 @@ export default function CameraFullScreen() {
       const padX = Math.floor((640 - resizedWidth) / 2);
       const padY = Math.floor((640 - resizedHeight) / 2);
 
+      if (runYOLOFromFramePlugin) {
+        const rawOutput = runYOLOFromFramePlugin.call(frame) as number[] | undefined;
+        if (rawOutput && rawOutput.length > 0) {
+          runInferenceOnJS(
+            rawOutput,
+            frame.width,
+            frame.height,
+            resizedWidth,
+            resizedHeight,
+            padX,
+            padY,
+            scale,
+            true
+          );
+          return;
+        }
+        // Plugin returned null/empty (e.g. CoreML not loaded, only TFLite) — fall through to resize + TFLite path
+      }
+
       const rgbData = resizePlugin.resize(frame, {
         scale: { width: resizedWidth, height: resizedHeight },
         pixelFormat: 'rgb',
         dataType: 'uint8',
       });
       if (!rgbData || rgbData.length === 0) {
+        isInferencingShared.value = false;
         return;
       }
       const length = rgbData.length;
@@ -452,18 +502,20 @@ export default function CameraFullScreen() {
         resizedHeight,
         padX,
         padY,
-        scale
+        scale,
+        false
       );
       return;
     }
 
-    // Handle live inference (throttled to 3 FPS = every 333ms)
+    // Handle live inference (throttled to 1 FPS = every 1000ms)
     if (isLiveInferenceShared.value && !isInferencingShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = 5000; // 200ms for 5 FPS
+      const inferenceInterval = 100; // 200ms for 5 FPS
       
       if (timeSinceLastInference >= inferenceInterval) {
         lastLiveInferenceTime.value = now;
+        isInferencingShared.value = true;
 
         const maxSide = frame.width > frame.height ? frame.width : frame.height;
         const scale = 640 / maxSide;
@@ -472,12 +524,32 @@ export default function CameraFullScreen() {
         const padX = Math.floor((640 - resizedWidth) / 2);
         const padY = Math.floor((640 - resizedHeight) / 2);
 
+        if (runYOLOFromFramePlugin) {
+          const rawOutput = runYOLOFromFramePlugin.call(frame) as number[] | undefined;
+          if (rawOutput && rawOutput.length > 0) {
+            runInferenceOnJS(
+              rawOutput,
+              frame.width,
+              frame.height,
+              resizedWidth,
+              resizedHeight,
+              padX,
+              padY,
+              scale,
+              true
+            );
+            return;
+          }
+          // Plugin returned null/empty (e.g. CoreML not loaded, only TFLite) — fall through to resize + TFLite path
+        }
+
         const rgbData = resizePlugin.resize(frame, {
           scale: { width: resizedWidth, height: resizedHeight },
           pixelFormat: 'rgb',
           dataType: 'uint8',
         });
         if (!rgbData || rgbData.length === 0) {
+          isInferencingShared.value = false;
           return;
         }
         const length = rgbData.length;
@@ -493,11 +565,12 @@ export default function CameraFullScreen() {
           resizedHeight,
           padX,
           padY,
-          scale
+          scale,
+          false
         );
       }
     }
-  }, [singleShotRequestId, lastProcessedRequestId, runInferenceOnJS]);
+  }, [runInferenceOnJS, runYOLOFromFramePlugin]);
 
 
   if (!hasPermission) {
@@ -617,8 +690,8 @@ export default function CameraFullScreen() {
             if (!isModelLoaded || isInferencing) {
               return;
             }
+            // Trigger single-shot frame processor inference only
             singleShotRequestId.value += 1;
-            handleSnapshot();
           }}
           pointerEvents="auto"
         >

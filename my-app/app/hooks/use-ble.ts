@@ -18,6 +18,9 @@ export default function useBle() {
   const [devices, setDevices] = useState<Device[]>([]);
   const [connectingId, setConnectingId] = useState<string | null>(null);
   const [connectedId, setConnectedId] = useState<string | null>(null);
+  const connectedIdRef = useRef<string | null>(null);
+  useEffect(() => { connectedIdRef.current = connectedId; }, [connectedId]);
+
   const [currentPos, setCurrentPos] = useState<number | null>(null);
   const [currentPosLoading, setCurrentPosLoading] = useState(false);
 
@@ -292,8 +295,11 @@ export default function useBle() {
     if (posPollRef.current != null) return;
     setCurrentPosLoading(true);
     posPollRef.current = setInterval(async () => {
+      // Use ref to check connection status to avoid stale closure issues
+      const currentConnectedId = connectedIdRef.current;
+      
       // if we're no longer connected to this device, stop polling
-      if (!connectedId || connectedId !== deviceId) {
+      if (!currentConnectedId || currentConnectedId !== deviceId) {
         if (posPollRef.current != null) {
           clearInterval(posPollRef.current as unknown as number);
           posPollRef.current = null;
@@ -344,6 +350,12 @@ export default function useBle() {
 
   function startCurrentPosMonitor(deviceId: string) {
     stopCurrentPosMonitor();
+    // Switch to polling directly to effectively avoid the Native NullPointerException crash
+    // caused by monitorCharacteristicForDevice on some Android devices/versions.
+    console.log('startCurrentPosMonitor: defaulting to polling for stability');
+    startPosPolling(deviceId);
+
+    /*
     try {
       setCurrentPosLoading(true);
       charSubRef.current = bleManager.monitorCharacteristicForDevice(deviceId, TARGET_SERVICE_UUID, CURRENT_POS_UUID, (error, characteristic) => {
@@ -353,6 +365,7 @@ export default function useBle() {
         if (bytes.length >= 4) { const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength); const val = dv.getUint32(0, true); setCurrentPos(val); setCurrentPosLoading(false); }
       });
     } catch (e) { console.warn('startCurrentPosMonitor threw', e); startPosPolling(deviceId); }
+    */
   }
 
   return {
