@@ -169,7 +169,10 @@ public class CoreMLModule: Module {
 
   /// Called by the Frame Processor Plugin with a 640×640 CVPixelBuffer (no bridge). Returns raw output or nil.
   public static func runInferenceFromPixelBuffer(_ pixelBuffer: CVPixelBuffer) -> [Double]? {
-    guard let model = sharedInstance?.model else { return nil }
+    guard let model = sharedInstance?.model else {
+      print("LOG  ❌ runInferenceFromPixelBuffer: sharedInstance or model is nil (plugin cannot use native path)")
+      return nil
+    }
     do {
       let t0 = CFAbsoluteTimeGetCurrent()
       let request = VNCoreMLRequest(model: try VNCoreMLModel(for: model))
@@ -199,6 +202,9 @@ public class CoreMLModule: Module {
          let first = obsResults.first?.featureValue.multiArrayValue {
         return (0..<first.count).map { first[$0].doubleValue }
       }
+      let resultType = type(of: request.results)
+      let resultCount = request.results?.count ?? 0
+      print("LOG  ❌ runInferenceFromPixelBuffer: Vision results format not matched (type=\(resultType), count=\(resultCount)) — using bridge fallback")
       return nil
     } catch {
       print("❌ Core ML runInferenceFromPixelBuffer: \(error.localizedDescription)")

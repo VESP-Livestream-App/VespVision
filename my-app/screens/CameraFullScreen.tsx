@@ -475,10 +475,9 @@ export default function CameraFullScreen() {
             scale,
             true
           );
-        } else {
-          isInferencingShared.value = false;
+          return;
         }
-        return;
+        // Plugin returned null/empty (e.g. CoreML not loaded, only TFLite) — fall through to resize + TFLite path
       }
 
       const rgbData = resizePlugin.resize(frame, {
@@ -539,10 +538,9 @@ export default function CameraFullScreen() {
               scale,
               true
             );
-          } else {
-            isInferencingShared.value = false;
+            return;
           }
-          return;
+          // Plugin returned null/empty (e.g. CoreML not loaded, only TFLite) — fall through to resize + TFLite path
         }
 
         const rgbData = resizePlugin.resize(frame, {

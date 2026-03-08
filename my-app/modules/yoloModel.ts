@@ -20,9 +20,11 @@ export const loadYoloModel = async (): Promise<boolean> => {
         console.log('✅ Core ML model loaded (Neural Engine)');
         return true;
       }
+      console.warn('⚠️ Core ML loadModel returned false (model not found?)');
     } catch (error: unknown) {
       const msg = error instanceof Error ? error.message : String(error);
-      console.warn('⚠️ Core ML load failed, falling back to TFLite:', msg);
+      const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: string }).code : undefined;
+      console.warn('⚠️ Core ML load failed, falling back to TFLite:', code ?? msg, error);
     }
   }
 
