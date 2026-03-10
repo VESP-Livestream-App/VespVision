@@ -37,6 +37,42 @@ static const float REST_CURRENT_MA = 80.0f;
 // Blend strength when resting: 0.98 means 98% coulomb, 2% voltage each second.
 static const float REST_BLEND_ALPHA = 0.98f;
 
+// ================= Temperature sensor on A6 =================
+static const int TEMP_ADC_PIN = A6;
+
+static const int TEMP_TABLE_SIZE = 22;
+
+const float tempC_table[TEMP_TABLE_SIZE] = {
+  10,11,12,13,14,15,16,17,18,19,
+  20,21,22,23,24,25,26,27,28,29,
+  30,40
+};
+
+const float tempV_table[TEMP_TABLE_SIZE] = {
+  0.468750000f,
+  0.489510490f,
+  0.512195122f,
+  0.532786885f,
+  0.551724138f,
+  0.573529412f,
+  0.595744681f,
+  0.617647059f,
+  0.638297872f,
+  0.691176471f,
+  0.75f,
+  0.78358209f,
+  0.8203125f,
+  0.853658537f,
+  0.882352941f,
+  0.913043478f,
+  0.945945946f,
+  0.981308411f,
+  1.009615385f,
+  1.060606061f,
+  1.105263158f,
+  1.544117647f
+};
+
 // ================= 60s voltage averaging =================
 static const int NUM_SAMPLES = 60;
 float vpack_buf[NUM_SAMPLES];
@@ -76,6 +112,23 @@ static inline float clamp01(float x) {
   return x;
 }
 
+float readADCVoltage_V(int pin) {
+  const int samples = 16;
+
+  // Throw away first read after channel switching
+  analogRead(pin);
+  delayMicroseconds(300);
+
+  uint32_t acc = 0;
+  for (int i = 0; i < samples; i++) {
+    acc += analogRead(pin);
+    delayMicroseconds(300);
+  }
+
+  float raw = acc / (float)samples;
+  return (raw / 4095.0f) * ADC_VREF;
+}
+
 float readPackVoltage_V() {
   const int samples = 16;
   uint32_t acc = 0;
@@ -112,12 +165,27 @@ float socFromCellVoltage(float v_cell) {
   float v1 = ocv_soc_lut[lo + 1];
   float t  = (v_cell - v0) / (v1 - v0);
 
-  // LUT step is 0.5% per index
   float soc0 = lo * 0.5f;
   return soc0 + t * 0.5f;
 }
 
-void drawBattery(float soc_pct, float vpack_avg, float current_mA, float soc_v_pct) {
+float temperatureFromVoltage(float v) {
+  if (v <= tempV_table[0]) return tempC_table[0];
+  if (v >= tempV_table[TEMP_TABLE_SIZE - 1]) return tempC_table[TEMP_TABLE_SIZE - 1];
+
+  for (int i = 0; i < TEMP_TABLE_SIZE - 1; i++) {
+    float v0 = tempV_table[i];
+    float v1 = tempV_table[i + 1];
+    if (v >= v0 && v <= v1) {
+      float t = (v - v0) / (v1 - v0);
+      return tempC_table[i] + t * (tempC_table[i + 1] - tempC_table[i]);
+    }
+  }
+
+  return -999.0f;
+}
+
+void drawBattery(float soc_pct, float vpack_avg, float current_mA, float soc_v_pct, float tempC) {
   tft.fillScreen(ILI9341_BLACK);
   tft.setRotation(3);
 
@@ -142,25 +210,30 @@ void drawBattery(float soc_pct, float vpack_avg, float current_mA, float soc_v_p
   tft.print(current_mA, 0);
   tft.print(" mA");
 
-  // Optional: show voltage-only SOC for sanity
   tft.setCursor(10, 175);
   tft.print("SOC_V: ");
   tft.print(soc_v_pct, 1);
   tft.print("%");
+
+  tft.setCursor(10, 200);
+  tft.print("Temp: ");
+  tft.print(tempC, 1);
+  tft.print(" C");
 }
 
 // ================= State for coulomb counting =================
-float soc_cc = 0.50f;   // coulomb-count SOC as fraction 0..1
+float soc_cc = 0.50f;
 bool  soc_initialized = false;
 
 float latest_soc_pct = 0;
 float latest_vpack_avg = 0;
 float latest_current_mA = 0;
 float latest_soc_v_pct = 0;
+float latest_tempC = 0;
+float latest_tempV = 0;
 
 void setup() {
   Serial.begin(115200);
-  while (!Serial) delay(10);
 
   analogReadResolution(12);
 
@@ -183,7 +256,6 @@ void setup() {
 }
 
 void loop() {
-
   static unsigned long lastSampleMs = 0;
   static unsigned long lastDisplayMs = 0;
 
@@ -199,8 +271,12 @@ void loop() {
     float current_mA_raw = ina219.getCurrent_mA();
     float current_mA = CURRENT_SIGN * current_mA_raw;
 
-    // ---- Read voltage ----
+    // ---- Read battery voltage ----
     float vpack = readPackVoltage_V();
+
+    // ---- Read temperature sensor voltage ----
+    float tempV = readADCVoltage_V(TEMP_ADC_PIN);
+    float tempC = temperatureFromVoltage(tempV);
 
     // Store in 60-sample buffer
     vpack_buf[vpack_idx] = vpack;
@@ -238,17 +314,20 @@ void loop() {
     latest_vpack_avg = vpack_avg;
     latest_current_mA = current_mA;
     latest_soc_v_pct = soc_v_pct;
+    latest_tempV = tempV;
+    latest_tempC = tempC;
   }
 
   // =====================
   // 10 Second Display Refresh
   // =====================
-  if (now - lastDisplayMs >= 10000) {
-    lastDisplayMs += 10000;
+  if (now - lastDisplayMs >= 1000) {
+    lastDisplayMs += 1000;
 
     drawBattery(latest_soc_pct,
                 latest_vpack_avg,
                 latest_current_mA,
-                latest_soc_v_pct);
+                latest_soc_v_pct,
+                latest_tempC);
   }
 }
