@@ -21,6 +21,8 @@ moveCmd_u moveCmd =
 };
 
 BLEDevice central;
+static unsigned long lastSampleMs = 0;
+static unsigned long lastDisplayMs = 0;
 
 // forward declarations
 void setServo(int angle, unsigned long durationMs);
@@ -31,6 +33,7 @@ void setup()
   Serial.begin(115200);
   bleSetup();
   servoSetup();
+  displaySetup();
 }
 
 
@@ -45,7 +48,22 @@ void loop() {
       Serial.println(central.address());
     }
   }
+  
+  unsigned long now = millis();
+  float soc_pct = -1.0f;
 
+  if (now - lastSampleMs >= 1000) 
+  {
+    lastSampleMs += 1000;
+    soc_pct = calculateDisplayData();
+  }
+
+  if (now - lastDisplayMs >= 1000) 
+  {
+    lastDisplayMs += 1000;
+    updateDisplay();
+  }
+  
   // If connected, handle commands
   if (central && central.connected()) 
   {
@@ -57,6 +75,12 @@ void loop() {
     updateServo();
     int servoAngle = getServoAngle();
     servoAngleBroadcast(servoAngle);
+    if (soc_pct >= 0.0f && soc_pct <= 100.0f) {
+      tripodSocBroadcast(soc_pct);
+    }
+    else {
+      Serial.println("SOC out of range, not broadcasting");
+    }
   } 
   else if (central) 
   {

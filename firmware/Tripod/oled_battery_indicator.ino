@@ -232,8 +232,7 @@ float latest_soc_v_pct = 0;
 float latest_tempC = 0;
 float latest_tempV = 0;
 
-void setup() {
-  Serial.begin(115200);
+void displaySetup() {
 
   analogReadResolution(12);
 
@@ -255,79 +254,65 @@ void setup() {
   tft.print("Starting...");
 }
 
-void loop() {
-  static unsigned long lastSampleMs = 0;
-  static unsigned long lastDisplayMs = 0;
+void calculateDisplayData() {
 
-  unsigned long now = millis();
+  // ---- Read current ----
+  float current_mA_raw = ina219.getCurrent_mA();
+  float current_mA = CURRENT_SIGN * current_mA_raw;
 
-  // =====================
-  // 1 Hz Sampling Block
-  // =====================
-  if (now - lastSampleMs >= 1000) {
-    lastSampleMs += 1000;
+  // ---- Read battery voltage ----
+  float vpack = readPackVoltage_V();
 
-    // ---- Read current ----
-    float current_mA_raw = ina219.getCurrent_mA();
-    float current_mA = CURRENT_SIGN * current_mA_raw;
+  // ---- Read temperature sensor voltage ----
+  float tempV = readADCVoltage_V(TEMP_ADC_PIN);
+  float tempC = temperatureFromVoltage(tempV);
 
-    // ---- Read battery voltage ----
-    float vpack = readPackVoltage_V();
-
-    // ---- Read temperature sensor voltage ----
-    float tempV = readADCVoltage_V(TEMP_ADC_PIN);
-    float tempC = temperatureFromVoltage(tempV);
-
-    // Store in 60-sample buffer
-    vpack_buf[vpack_idx] = vpack;
-    vpack_idx++;
-    if (vpack_idx >= NUM_SAMPLES) {
-      vpack_idx = 0;
-      vpack_full = true;
-    }
-
-    float vpack_avg = averageVpack();
-    float vcell_avg = vpack_avg / (float)NUM_CELLS_SERIES;
-
-    float soc_v_pct = socFromCellVoltage(vcell_avg);
-    float soc_v = soc_v_pct / 100.0f;
-
-    // Initialize SOC once
-    if (!soc_initialized && (vpack_full || vpack_idx >= 10)) {
-      soc_cc = clamp01(soc_v);
-      soc_initialized = true;
-    }
-
-    // ---- Coulomb counting ----
-    float delta_mAh = (current_mA * 1.0f) / 3600.0f;
-    soc_cc -= (delta_mAh / PACK_CAPACITY_MAH);
-    soc_cc = clamp01(soc_cc);
-
-    // ---- Drift correction ----
-    if (fabs(current_mA) < REST_CURRENT_MA) {
-      soc_cc = clamp01(REST_BLEND_ALPHA * soc_cc +
-                       (1.0f - REST_BLEND_ALPHA) * soc_v);
-    }
-
-    // Store latest values for display
-    latest_soc_pct = soc_cc * 100.0f;
-    latest_vpack_avg = vpack_avg;
-    latest_current_mA = current_mA;
-    latest_soc_v_pct = soc_v_pct;
-    latest_tempV = tempV;
-    latest_tempC = tempC;
+  // Store in 60-sample buffer
+  vpack_buf[vpack_idx] = vpack;
+  vpack_idx++;
+  if (vpack_idx >= NUM_SAMPLES) {
+    vpack_idx = 0;
+    vpack_full = true;
   }
 
-  // =====================
-  // 10 Second Display Refresh
-  // =====================
-  if (now - lastDisplayMs >= 1000) {
-    lastDisplayMs += 1000;
+  float vpack_avg = averageVpack();
+  float vcell_avg = vpack_avg / (float)NUM_CELLS_SERIES;
 
-    drawBattery(latest_soc_pct,
-                latest_vpack_avg,
-                latest_current_mA,
-                latest_soc_v_pct,
-                latest_tempC);
+  float soc_v_pct = socFromCellVoltage(vcell_avg);
+  float soc_v = soc_v_pct / 100.0f;
+
+  // Initialize SOC once
+  if (!soc_initialized && (vpack_full || vpack_idx >= 10)) {
+    soc_cc = clamp01(soc_v);
+    soc_initialized = true;
   }
+
+  // ---- Coulomb counting ----
+  float delta_mAh = (current_mA * 1.0f) / 3600.0f;
+  soc_cc -= (delta_mAh / PACK_CAPACITY_MAH);
+  soc_cc = clamp01(soc_cc);
+
+  // ---- Drift correction ----
+  if (fabs(current_mA) < REST_CURRENT_MA) {
+    soc_cc = clamp01(REST_BLEND_ALPHA * soc_cc +
+                      (1.0f - REST_BLEND_ALPHA) * soc_v);
+  }
+
+  // Store latest values for display
+  latest_soc_pct = soc_cc * 100.0f;
+  latest_vpack_avg = vpack_avg;
+  latest_current_mA = current_mA;
+  latest_soc_v_pct = soc_v_pct;
+  latest_tempV = tempV;
+  latest_tempC = tempC;
+  
+  return latest_soc_pct;
+}
+void updateDisplay(){
+  drawBattery(latest_soc_pct,
+              latest_vpack_avg,
+              latest_current_mA,
+              latest_soc_v_pct,
+              latest_tempC);
+
 }

@@ -4,10 +4,12 @@
 #define DEVICE_NAME "BBallTripod"
 #define SERVO_COMMAND_UUID    "b793f920-016e-49ea-a4fd-15fe1d21a1a5"
 #define CURRENT_POS_UUID "d69abf56-23cb-4101-a496-f7f0869130ef"
+#define SOC_UUID "00000000-0000-0000-0000-000000000000" // TODO: generate a real one
 
 BLEService nanoService(SERVICE_UUID);
 BLECharacteristic servoCommand(SERVO_COMMAND_UUID, BLERead | BLEWrite | BLENotify, sizeof(moveCmd_u));
 BLECharacteristic currentPos(CURRENT_POS_UUID, BLERead | BLEWrite | BLENotify, sizeof(int));
+BLECharacteristic soc(SOC_UUID, BLEWrite | BLENotify, sizeof(float));
 
 extern moveCmd_u moveCmd;
 
@@ -23,6 +25,7 @@ void bleSetup()
 
   nanoService.addCharacteristic(servoCommand);
   nanoService.addCharacteristic(currentPos);
+  nanoService.addCharacteristic(soc);
   BLE.addService(nanoService);
 
   BLE.advertise();
@@ -47,4 +50,9 @@ bool checkNewCmd()
 void servoAngleBroadcast(int32_t angle)
 {
     currentPos.writeValue(angle);
+}
+
+void tripodSocBroadcast(float tripodSoc)
+{
+    soc.writeValue(tripodSoc);
 }
