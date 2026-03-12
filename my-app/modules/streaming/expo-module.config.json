@@ -1,0 +1,8 @@
+{
+  "platforms": ["ios", "android"],
+  "ios": { "modules": ["StreamingModule"] },
+  "android": {
+    "package": "my.app.streaming",
+    "modules": ["my.app.streaming.StreamingModule"]
+  }
+}

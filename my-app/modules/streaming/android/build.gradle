@@ -1,0 +1,20 @@
+apply plugin: 'com.android.library'
+apply plugin: 'org.jetbrains.kotlin.android'
+
+group = 'my.app.streaming'
+version = '1.0.0'
+
+android {
+  compileSdkVersion project.findProperty('android.compileSdkVersion')?.toInteger() ?: 34
+  namespace "my.app.streaming"
+  defaultConfig {
+    minSdkVersion project.findProperty('android.minSdkVersion')?.toInteger() ?: 24
+    targetSdkVersion project.findProperty('android.targetSdkVersion')?.toInteger() ?: 34
+  }
+}
+
+dependencies {
+  implementation project(':expo-modules-core')
+  implementation "org.jetbrains.kotlin:kotlin-stdlib-jdk7:${project.findProperty('kotlinVersion') ?: '1.9.22'}"
+  implementation 'com.github.pedroSG94.RootEncoder:library:2.6.7'
+}

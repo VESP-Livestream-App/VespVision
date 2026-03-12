@@ -42,3 +42,7 @@ app-example
 /ios
 /android
 /modules/tflite/android/build
+/modules/streaming/android/build
+
+# Gradle build cache
+**/.gradle

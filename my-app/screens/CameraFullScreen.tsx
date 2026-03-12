@@ -7,6 +7,7 @@ import { getBLEControlService } from '@/modules/bleControlService';
 import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
 import { ControlLoop } from '@/modules/controlLoop';
 import { addSnapshot } from '@/modules/snapshotStore';
+import { getConnectionStatus, startStreaming, stopStreaming } from '@/modules/StreamingModule';
 import { normalizeOutputLayout, runYoloInference } from '@/modules/yoloInference';
 import { closeYoloModel, loadYoloModel } from '@/modules/yoloModel';
 import type { Detection } from '@/modules/yoloUtils';
@@ -27,6 +28,9 @@ import {
 } from 'react-native-vision-camera';
 import { useRunOnJS, useSharedValue } from 'react-native-worklets-core';
 import { createResizePlugin } from 'vision-camera-resize-plugin';
+
+/** RTMP server URL for live streaming. Change when switching networks. */
+const RTMP_STREAM_URL = 'rtmp://128.189.132.229:1935/live/stream';
 
 const base64ToUint8Array = (base64: string): Uint8Array => {
   const binaryString = global.atob(base64);
@@ -70,6 +74,7 @@ export default function CameraFullScreen() {
   const [fps, setFps] = useState(0);
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('landscape');
   const [isLiveInference, setIsLiveInference] = useState(false);
+  const [isStreaming, setIsStreaming] = useState(false);
   const singleShotRequestId = useSharedValue(0);
   const lastProcessedRequestId = useSharedValue(0);
   const fpsFrameCount = useSharedValue(0);
@@ -78,6 +83,8 @@ export default function CameraFullScreen() {
   const isLiveInferenceShared = useSharedValue(false);
   const lastLiveInferenceTime = useSharedValue(0);
   const isInferencingShared = useSharedValue(false);
+  const isStreamingShared = useSharedValue(false);
+  const streamFrameCount = useSharedValue(0);
 
   // BLE integration for control loop
   const {
@@ -312,16 +319,16 @@ export default function CameraFullScreen() {
       setBallSide(getBallSide(corrected, frameWidth));
       setLastFrameSize({ width: frameWidth, height: frameHeight });
       setLastInferenceAt(Date.now());
-      console.log('🧠 YOLO detections:', corrected.map((det) => ({
-        class: det.className ?? det.class,
-        confidence: Number(det.confidence.toFixed(3)),
-        box: {
-          x: Number(det.x.toFixed(1)),
-          y: Number(det.y.toFixed(1)),
-          w: Number(det.width.toFixed(1)),
-          h: Number(det.height.toFixed(1)),
-        },
-      })));
+      // console.log('🧠 YOLO detections:', corrected.map((det) => ({
+      //   class: det.className ?? det.class,
+      //   confidence: Number(det.confidence.toFixed(3)),
+      //   box: {
+      //     x: Number(det.x.toFixed(1)),
+      //     y: Number(det.y.toFixed(1)),
+      //     w: Number(det.width.toFixed(1)),
+      //     h: Number(det.height.toFixed(1)),
+      //   },
+      // })));
     } catch (error) {
       console.error('❌ Inference error:', error);
     } finally {
@@ -335,12 +342,44 @@ export default function CameraFullScreen() {
   const updateFpsOnJS = useRunOnJS((value: number) => {
     setFps(value);
   }, []);
+  const logStreamCaptureOnJS = useRunOnJS((count: number) => {
+    console.log('LOG  📹 Stream capture: enqueued', count, 'frames (JS)');
+  }, []);
 
   const resizePlugin = useMemo(() => createResizePlugin(), []);
   const runYOLOFromFramePlugin = useMemo(
     () => VisionCameraProxy.initFrameProcessorPlugin('runYOLOFromFrame', {}),
     []
   );
+  const enqueueStreamFramePlugin = useMemo(
+    () => VisionCameraProxy.initFrameProcessorPlugin('enqueueStreamFrame', {}),
+    []
+  );
+
+  useEffect(() => {
+    isStreamingShared.value = isStreaming;
+    if (isStreaming) {
+      console.log('LOG  📹 Stream Capture turned ON');
+      startStreaming(RTMP_STREAM_URL).catch((e) =>
+        console.warn('StreamingModule.startStreaming:', e)
+      );
+    } else {
+      console.log('LOG  📹 Stream Capture turned OFF');
+      stopStreaming().catch((e) => console.warn('StreamingModule.stopStreaming:', e));
+    }
+  }, [isStreaming]);
+
+  // Log RTMP connection status when streaming
+  useEffect(() => {
+    if (!isStreaming) return;
+    const id = setInterval(() => {
+      const status = getConnectionStatus();
+      if (status !== 'idle' && status !== 'connecting') {
+        console.log('LOG  📹 RTMP status:', status);
+      }
+    }, 3000);
+    return () => clearInterval(id);
+  }, [isStreaming]);
 
   useEffect(() => {
     if (runYOLOFromFramePlugin) {
@@ -349,6 +388,12 @@ export default function CameraFullScreen() {
       console.log('LOG  ⚠️ Native frame plugin not available — using bridge path (slower). Rebuild iOS app with plugin.');
     }
   }, [runYOLOFromFramePlugin]);
+
+  useEffect(() => {
+    if (enqueueStreamFramePlugin) {
+      console.log('LOG  ✅ Streaming frame plugin (enqueueStreamFrame) loaded');
+    }
+  }, [enqueueStreamFramePlugin]);
 
   const padToSquare = (
     rgbData: number[],
@@ -441,7 +486,18 @@ export default function CameraFullScreen() {
       fpsLastTimestamp.value = now;
       updateFpsOnJS(nextFps);
     }
-    
+
+    // Streaming: enqueue full-res frame when streaming enabled (throttle to ~15 fps)
+    if (isStreamingShared.value && enqueueStreamFramePlugin) {
+      streamFrameCount.value += 1;
+      if (streamFrameCount.value % 2 === 0) {
+        enqueueStreamFramePlugin.call(frame);
+        if (streamFrameCount.value % 30 === 0) {
+          logStreamCaptureOnJS(streamFrameCount.value);
+        }
+      }
+    }
+
     if (!isModelLoadedShared.value) {
       return;
     }
@@ -570,7 +626,7 @@ export default function CameraFullScreen() {
         );
       }
     }
-  }, [runInferenceOnJS, runYOLOFromFramePlugin]);
+  }, [runInferenceOnJS, runYOLOFromFramePlugin, enqueueStreamFramePlugin, logStreamCaptureOnJS]);
 
 
   if (!hasPermission) {
@@ -682,6 +738,21 @@ export default function CameraFullScreen() {
             disabled={!isModelLoaded}
             trackColor={{ false: '#767577', true: '#81b0ff' }}
             thumbColor={isLiveInference ? '#f5dd4b' : '#f4f3f4'}
+          />
+        </View>
+        <View style={styles.toggleContainer} pointerEvents="auto">
+          <ThemedText style={styles.toggleLabel}>Stream Capture</ThemedText>
+          <Switch
+            value={isStreaming}
+            onValueChange={(value) => {
+              setIsStreaming(value);
+              isStreamingShared.value = value;
+              if (!value) {
+                streamFrameCount.value = 0;
+              }
+            }}
+            trackColor={{ false: '#767577', true: '#34c759' }}
+            thumbColor={isStreaming ? '#f5dd4b' : '#f4f3f4'}
           />
         </View>
         <Pressable
