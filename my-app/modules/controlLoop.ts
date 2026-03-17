@@ -102,7 +102,7 @@ export class ControlLoop {
     // pixelX = 0 -> angle = 0
     // pixelX = frameWidth -> angle = planeDegrees
     const normalized = pixelX / this.frameWidth;
-    return normalized * this.planeDegrees;
+    return normalized * this.fieldOfView;
   }
 
   /**
@@ -153,14 +153,23 @@ export class ControlLoop {
       }
     );
     
-    // Update servo search mode if needed
-    if (this.servo.isSearching) {
-      this.servo.updateSearch(currentServoPos, this.fieldOfView, this.edgeRedundancyFactor);
-    }
-    
     // If no ball detected, enter search mode
     if (!ballDetection) {
-      if (this.state.isTracking) {
+      // Update servo search mode if needed - only when actually searching
+      if (this.servo.isSearching) {
+        const updated = this.servo.updateSearch(currentServoPos, this.fieldOfView, this.edgeRedundancyFactor);
+        if (updated) {
+          this.state.targetAngle = this.servo.targetPos;
+          const timeMs = this.servo.getTimeToTarget(currentServoPos);
+          console.log('🔍 [Control] Searching...');
+          console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
+          console.log(`   Target angle: ${this.servo.targetPos.toFixed(2)}°`);
+          console.log(`   Time to move: ${timeMs}ms`);
+          return { angle: this.servo.targetPos, timeMs };
+        }
+      }
+      
+      else if (this.state.isTracking) {
         // Just lost target - enter search mode
         console.log('🎯 [Control] Target lost - entering search mode');
         console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
@@ -180,31 +189,16 @@ export class ControlLoop {
         
         return { angle: this.servo.targetPos, timeMs };
       }
-      
-      // Already searching - continue search
-      if (this.servo.isSearching) {
-        this.state.isSearching = true;
-        this.state.targetAngle = this.servo.targetPos;
-        const timeMs = this.servo.getTimeToTarget(currentServoPos);
-        
-        console.log('🔍 [Control] Searching...');
-        console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
-        console.log(`   Target angle: ${this.servo.targetPos.toFixed(2)}°`);
-        console.log(`   Time to move: ${timeMs}ms`);
-        
-        return { angle: this.servo.targetPos, timeMs };
-      }
-      
       return null;
     }
     
     // Ball detected - calculate position
     const ballCenterX = ballDetection.x + ballDetection.width / 2;
-    const targetAngle = this.pixelToAngle(ballCenterX);
+    const fovAngle = this.pixelToAngle(ballCenterX);
     
     console.log('⚽ [Control] Ball detected');
     console.log(`   Ball center X: ${ballCenterX.toFixed(1)}px`);
-    console.log(`   Target angle: ${targetAngle.toFixed(2)}°`);
+    console.log(`   Target angle: ${(currentServoPos - this.fieldOfView / 2 + fovAngle).toFixed(2)}°`);
     console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
     
     // Check if target is visible
@@ -220,14 +214,14 @@ export class ControlLoop {
     }
     
     // Calculate error: distance from center of image
-    // Center of image = currentServoPos
-    // Target location = targetAngle
+    // Center of image = currentServoPos - this.fieldOfView / 2
+    // Target location = fovAngle
     // Error = Target - Center
-    const errorDegrees = targetAngle - currentServoPos;
+    const errorDegrees = fovAngle - this.fieldOfView / 2;
     this.state.lastError = errorDegrees;
     
     // Normalize error to [-1.0, 1.0] range based on plane dimensions
-    const normalizedError = errorDegrees / this.planeDegrees;
+    const normalizedError = errorDegrees / (this.fieldOfView / 2);
     this.state.normalizedError = normalizedError;
     
     // Compute control signal
