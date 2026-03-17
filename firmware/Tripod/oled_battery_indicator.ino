@@ -254,7 +254,7 @@ void displaySetup() {
   tft.print("Starting...");
 }
 
-void calculateDisplayData() {
+float calculateDisplayData() {
 
   // ---- Read current ----
   float current_mA_raw = ina219.getCurrent_mA();
