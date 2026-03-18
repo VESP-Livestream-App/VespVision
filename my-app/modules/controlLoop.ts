@@ -37,7 +37,7 @@ export class ControlLoop {
   private readonly frameWidth: number;
   private readonly planeDegrees: number;
   private readonly edgeRedundancyFactor: number;
-  private readonly movementThreshold: number = 2.0;
+  private readonly movementThreshold: number = 3.0;
   
   private readonly servo: Servo;
   private readonly controller: PIDController;
@@ -57,10 +57,10 @@ export class ControlLoop {
   constructor(config: ControlLoopConfig = {}) {
     const {
       fieldOfView = 70,
-      servoSpeed = 60.0,
-      kp = 25.0,
-      ki = 0.1,
-      kd = 5.0,
+      servoSpeed = 40.0,
+      kp = 0.30 * fieldOfView,
+      ki = 0.0 * fieldOfView,
+      kd = 0.07 * fieldOfView,
       derivativeBufferSize = 3,
       frameWidth = 640,
       planeDegrees = 180,
