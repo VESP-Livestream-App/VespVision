@@ -33,7 +33,7 @@ void setup()
   Serial.begin(115200);
   bleSetup();
   servoSetup();
-  displaySetup();
+  // displaySetup();
 }
 
 
