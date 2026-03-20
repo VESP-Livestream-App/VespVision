@@ -4,12 +4,12 @@
 #define DEVICE_NAME "BBallTripod"
 #define SERVO_COMMAND_UUID    "b793f920-016e-49ea-a4fd-15fe1d21a1a5"
 #define CURRENT_POS_UUID "d69abf56-23cb-4101-a496-f7f0869130ef"
-#define SOC_UUID "00000000-0000-0000-0000-000000000000" // TODO: generate a real one
+#define SOC_UUID "f2f8b45c-3f57-4e7a-9185-5f2f4b0d8f42"
 
 BLEService nanoService(SERVICE_UUID);
 BLECharacteristic servoCommand(SERVO_COMMAND_UUID, BLERead | BLEWrite | BLENotify, sizeof(moveCmd_u));
 BLECharacteristic currentPos(CURRENT_POS_UUID, BLERead | BLEWrite | BLENotify, sizeof(int));
-BLECharacteristic soc(SOC_UUID, BLEWrite | BLENotify, sizeof(float));
+BLECharacteristic soc(SOC_UUID, BLERead | BLEWrite | BLENotify, sizeof(uint32_t));
 
 extern moveCmd_u moveCmd;
 
@@ -25,7 +25,7 @@ void bleSetup()
 
   nanoService.addCharacteristic(servoCommand);
   nanoService.addCharacteristic(currentPos);
-  nanoService.addCharacteristic(soc);
+  //nanoService.addCharacteristic(soc);
   BLE.addService(nanoService);
 
   BLE.advertise();
@@ -55,5 +55,5 @@ void servoAngleBroadcast(int32_t angle)
 void tripodSocBroadcast(float tripodSoc)
 {
     // ArduinoBLE has no float overload; send float as 4 raw bytes.
-    soc.writeValue(reinterpret_cast<uint8_t*>(&tripodSoc), sizeof(tripodSoc));
+    soc.writeValue(uint32_t(tripodSoc), sizeof(tripodSoc));
 }
