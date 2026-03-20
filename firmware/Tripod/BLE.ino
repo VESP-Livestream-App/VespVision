@@ -54,5 +54,6 @@ void servoAngleBroadcast(int32_t angle)
 
 void tripodSocBroadcast(float tripodSoc)
 {
-    soc.writeValue(tripodSoc);
+    // ArduinoBLE has no float overload; send float as 4 raw bytes.
+    soc.writeValue(reinterpret_cast<uint8_t*>(&tripodSoc), sizeof(tripodSoc));
 }
