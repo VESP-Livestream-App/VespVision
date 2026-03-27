@@ -21,6 +21,7 @@ export interface ControlLoopConfig {
   frameWidth?: number;          // Camera frame width in pixels (default: 640)
   planeDegrees?: number;        // Total plane range in degrees (default: 180)
   edgeViewRedundancyFactor?: number; // Edge buffer factor (default: 0.25)
+  searchModeDelayMs?: number;   // Delay before entering search mode when target is lost
 }
 
 export interface ControlLoopState {
@@ -30,6 +31,7 @@ export interface ControlLoopState {
   normalizedError: number | null; // Last normalized error [-1, 1]
   controlSignal: number | null;  // Last control signal
   targetAngle: number | null;    // Current target angle for servo
+  lastDetectedBallAngle: number | null; // Ball angle at the latest detection
 }
 
 export class ControlLoop {
@@ -37,7 +39,8 @@ export class ControlLoop {
   private readonly frameWidth: number;
   private readonly planeDegrees: number;
   private readonly edgeRedundancyFactor: number;
-  private readonly movementThreshold: number = 3.0;
+  private readonly searchModeDelayMs: number;
+  private readonly movementThreshold: number = 5.0;
   
   private readonly servo: Servo;
   private readonly controller: PIDController;
@@ -49,28 +52,31 @@ export class ControlLoop {
     normalizedError: null,
     controlSignal: null,
     targetAngle: null,
+    lastDetectedBallAngle: null,
   };
 
   private lastControlTime: number = 0;
-  private intervalMs: number;
+  private targetLostAt: number | null = null;
 
   constructor(config: ControlLoopConfig = {}) {
     const {
       fieldOfView = 70,
       servoSpeed = 40.0,
-      kp = 0.30 * fieldOfView,
-      ki = 0.0 * fieldOfView,
-      kd = 0.07 * fieldOfView,
+      kp = 5.50 * fieldOfView,
+      ki = 0.5 * fieldOfView,
+      kd = 0.05 * fieldOfView,
       derivativeBufferSize = 3,
       frameWidth = 640,
       planeDegrees = 180,
       edgeViewRedundancyFactor = 0.25,
+      searchModeDelayMs = 1500,
     } = config;
 
     this.fieldOfView = fieldOfView;
     this.frameWidth = frameWidth;
     this.planeDegrees = planeDegrees;
     this.edgeRedundancyFactor = edgeViewRedundancyFactor;
+    this.searchModeDelayMs = searchModeDelayMs;
     
     
     this.servo = new Servo({
@@ -149,12 +155,18 @@ export class ControlLoop {
         const label = String(det.className ?? det.class).toLowerCase();
         // Use det.score if present, otherwise assume 1.0 (for backward compatibility)
         const score = (det as any)?.score ?? 1.0;
-        return BALL_LABELS.includes(label) && score >= 0.5;
+        return BALL_LABELS.includes(label) && score >= 0.7;
       }
     );
     
     // If no ball detected, enter search mode
     if (!ballDetection) {
+      // Clear PID history while target is missing so stale integral/derivative
+      // values do not cause jumps when detections resume.
+      this.controller.reset();
+      this.state.lastDetectedBallAngle = null;
+      this.state.controlSignal = null;
+      this.state.normalizedError = null;
       // Update servo search mode if needed - only when actually searching
       if (this.servo.isSearching) {
         const updated = this.servo.updateSearch(currentServoPos, this.fieldOfView, this.edgeRedundancyFactor);
@@ -170,7 +182,16 @@ export class ControlLoop {
       }
       
       else if (this.state.isTracking) {
-        // Just lost target - enter search mode
+        // Just lost target - wait before entering search mode
+        if (this.targetLostAt === null) {
+          this.targetLostAt = now;
+        }
+        const lostForMs = now - this.targetLostAt;
+        if (lostForMs < this.searchModeDelayMs) {
+          console.log(`⏳ [Control] Target lost - waiting ${this.searchModeDelayMs - lostForMs}ms before search mode`);
+          return null;
+        }
+
         console.log('🎯 [Control] Target lost - entering search mode');
         console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
         this.state.isTracking = false;
@@ -191,14 +212,18 @@ export class ControlLoop {
       }
       return null;
     }
+
+    this.targetLostAt = null;
     
     // Ball detected - calculate position
     const ballCenterX = ballDetection.x + ballDetection.width / 2;
     const fovAngle = this.pixelToAngle(ballCenterX);
+    const detectedBallAngle = currentServoPos - this.fieldOfView / 2 + fovAngle;
+    this.state.lastDetectedBallAngle = detectedBallAngle;
     
     console.log('⚽ [Control] Ball detected');
     console.log(`   Ball center X: ${ballCenterX.toFixed(1)}px`);
-    console.log(`   Target angle: ${(currentServoPos - this.fieldOfView / 2 + fovAngle).toFixed(2)}°`);
+    console.log(`   Target angle: ${detectedBallAngle.toFixed(2)}°`);
     console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
     
     // Check if target is visible
@@ -225,7 +250,7 @@ export class ControlLoop {
     this.state.normalizedError = normalizedError;
     
     // Compute control signal
-    const controlSignal = this.controller.computeControl(normalizedError);
+    const controlSignal = this.controller.computeControl(normalizedError, true);
     this.state.controlSignal = controlSignal;
     
     // Calculate new servo target
@@ -270,8 +295,11 @@ export class ControlLoop {
       normalizedError: null,
       controlSignal: null,
       targetAngle: null,
+      lastDetectedBallAngle: null,
     };
     this.lastControlTime = 0;
+    this.targetLostAt = null;
+    this.controller.reset();
     this.servo.moveTo(90.0);
   }
 }
