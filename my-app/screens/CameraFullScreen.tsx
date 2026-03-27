@@ -6,6 +6,7 @@ import { sendTurnSignal } from '@/modules/bleClient';
 import { getBLEControlService } from '@/modules/bleControlService';
 import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
 import { ControlLoop } from '@/modules/controlLoop';
+import { appendPidTelemetryRow, getPidTelemetryCsvPath, preparePidTelemetryCsvForExport } from '@/modules/pidTelemetry';
 import { addSnapshot } from '@/modules/snapshotStore';
 import { normalizeOutputLayout, runYoloInference } from '@/modules/yoloInference';
 import { closeYoloModel, loadYoloModel } from '@/modules/yoloModel';
@@ -13,10 +14,11 @@ import type { Detection } from '@/modules/yoloUtils';
 import { parseYOLOOutput } from '@/modules/yoloUtils';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImageManipulator from 'expo-image-manipulator';
+import * as Sharing from 'expo-sharing';
 import { useRouter } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, Pressable, StyleSheet, Switch, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, Switch, View } from 'react-native';
 import {
   Camera,
   Frame,
@@ -27,6 +29,28 @@ import {
 } from 'react-native-vision-camera';
 import { useRunOnJS, useSharedValue } from 'react-native-worklets-core';
 import { createResizePlugin } from 'vision-camera-resize-plugin';
+
+const CONTROL_FIELD_OF_VIEW = 70;
+const BALL_LABELS = ['sports ball', 'basketball', 'soccer ball', 'tennis ball'];
+
+const getDetectedBallAngleFromDetections = (
+  allDetections: Detection[],
+  frameWidth: number,
+  currentServoPos: number | null
+): number | null => {
+  if (currentServoPos === null || frameWidth <= 0) {
+    return null;
+  }
+  const bestBall = allDetections
+    .filter((det) => BALL_LABELS.includes(String(det.className ?? det.class).toLowerCase()))
+    .sort((a, b) => b.confidence - a.confidence)[0];
+  if (!bestBall) {
+    return null;
+  }
+  const ballCenterX = bestBall.x + bestBall.width / 2;
+  const fovAngle = (ballCenterX / frameWidth) * CONTROL_FIELD_OF_VIEW;
+  return currentServoPos - CONTROL_FIELD_OF_VIEW / 2 + fovAngle;
+};
 
 const base64ToUint8Array = (base64: string): Uint8Array => {
   const binaryString = global.atob(base64);
@@ -58,6 +82,16 @@ export default function CameraFullScreen() {
   const router = useRouter();
   const cameraRef = useRef<Camera>(null);
   const device = useCameraDevice('back');
+  const deviceFieldOfView = device?.formats?.[0]?.fieldOfView ?? CONTROL_FIELD_OF_VIEW;
+
+  useEffect(() => {
+    const rawFov = device?.formats?.[0]?.fieldOfView;
+    const usingFallback = rawFov === undefined || rawFov === null;
+    console.log(
+      `📷 Camera FOV selected: ${deviceFieldOfView.toFixed(2)}° (${usingFallback ? 'fallback' : 'device format'})`,
+      { rawFormatFieldOfView: rawFov ?? null }
+    );
+  }, [device, deviceFieldOfView]);
   const [isActive, setIsActive] = useState(true);
   const [detections, setDetections] = useState<Detection[]>([]);
   const [isModelLoaded, setIsModelLoaded] = useState(false);
@@ -78,6 +112,10 @@ export default function CameraFullScreen() {
   const isLiveInferenceShared = useSharedValue(false);
   const lastLiveInferenceTime = useSharedValue(0);
   const isInferencingShared = useSharedValue(false);
+  const isInferenceRunningJSShared = useSharedValue(false);
+  const inferenceStartedAt = useSharedValue(0);
+  const lastInferenceDurationShared = useSharedValue(40);
+  const INFERENCE_WATCHDOG_MS = 1200;
 
   // BLE integration for control loop
   const {
@@ -89,6 +127,7 @@ export default function CameraFullScreen() {
   // Control loop instance
   const controlLoopRef = useRef<ControlLoop | null>(null);
   const bleServiceRef = useRef(getBLEControlService());
+  const lastSentServoCommandAngleRef = useRef<number | null>(null);
 
   useEffect(() => {
     if (!hasPermission) {
@@ -175,25 +214,27 @@ export default function CameraFullScreen() {
   useEffect(() => {
     // Initialize control loop with default config 
     controlLoopRef.current = new ControlLoop({
-      fieldOfView: 70,
+      fieldOfView: deviceFieldOfView,
       servoSpeed: 40.0,
-      controllerGain: 25.0,
+      kp: 25.0,
       frameWidth: lastFrameSize.width || 640,
       planeDegrees: 180,
       edgeViewRedundancyFactor: 0.25,
+      searchModeDelayMs: 3000,
     });
 
     // Initialize BLE service with sendAngleTime callback
     bleServiceRef.current.initialize(async (deviceId, angle, timeMs) => {
       await sendAngleTime(deviceId, angle, timeMs);
     });
+    console.log(`📄 PID telemetry CSV will be written to: ${getPidTelemetryCsvPath()}`);
 
     return () => {
       // Cleanup
       controlLoopRef.current?.reset();
       bleServiceRef.current.reset();
     };
-  }, [sendAngleTime]);
+  }, [sendAngleTime, deviceFieldOfView]);
 
   // Update BLE service when connection changes
   useEffect(() => {
@@ -205,15 +246,16 @@ export default function CameraFullScreen() {
     if (controlLoopRef.current && lastFrameSize.width > 0) {
       // Recreate control loop with new frame width
       controlLoopRef.current = new ControlLoop({
-        fieldOfView: 70,
+        fieldOfView: deviceFieldOfView,
         servoSpeed: 40.0,
-        controllerGain: 25.0,
+        kp: 25.0,
         frameWidth: lastFrameSize.width,
         planeDegrees: 180,
         edgeViewRedundancyFactor: 0.25,
+        searchModeDelayMs: 3000,
       });
     }
-  }, [lastFrameSize.width]);
+  }, [lastFrameSize.width, deviceFieldOfView]);
 
   // Send turn signal via BLE when detections change (legacy - can be removed if using control loop)
   useEffect(() => {
@@ -251,7 +293,13 @@ export default function CameraFullScreen() {
 
     if (command) {
       // Send command via BLE
-      bleServiceRef.current.sendCommand(command).catch((error) => {
+      bleServiceRef.current.sendCommand(command).then((wasSent) => {
+        if (wasSent) {
+          lastSentServoCommandAngleRef.current = command.angle;
+        } else {
+          console.log('⚠️ Control command not sent (rate limit/disconnected).');
+        }
+      }).catch((error) => {
         console.error('❌ Failed to send control command via BLE:', error);
       });
     }
@@ -266,19 +314,28 @@ export default function CameraFullScreen() {
     padX: number,
     padY: number,
     scale: number,
-    fromNativeFrame: boolean
+    fromNativeFrame: boolean,
+    isLiveMode: boolean
   ) => {
+    const t0 = Date.now();
+    isInferenceRunningJSShared.value = true;
     if (!isModelLoaded) {
       console.log('❌ Inference skipped: model not loaded');
       isInferencingShared.value = false;
+      isInferenceRunningJSShared.value = false;
+      inferenceStartedAt.value = 0;
       return;
     }
     if (!payload || payload.length === 0) {
       console.warn('❌ Inference skipped: empty payload');
       isInferencingShared.value = false;
+      isInferenceRunningJSShared.value = false;
+      inferenceStartedAt.value = 0;
       return;
     }
-    setIsInferencing(true);
+    if (!isLiveMode) {
+      setIsInferencing(true);
+    }
     try {
       let detections: Detection[];
       if (fromNativeFrame) {
@@ -308,30 +365,29 @@ export default function CameraFullScreen() {
           height: Math.max(1, Math.min(frameHeight, height)),
         };
       });
+      const detectedBallAngle = getDetectedBallAngleFromDetections(corrected, frameWidth, currentPos);
+      appendPidTelemetryRow(detectedBallAngle, lastSentServoCommandAngleRef.current).catch((error) => {
+        console.error('❌ Failed to append PID telemetry row:', error);
+      });
       setDetections(corrected);
       setBallSide(getBallSide(corrected, frameWidth));
       setLastFrameSize({ width: frameWidth, height: frameHeight });
       setLastInferenceAt(Date.now());
-      console.log('🧠 YOLO detections:', corrected.map((det) => ({
-        class: det.className ?? det.class,
-        confidence: Number(det.confidence.toFixed(3)),
-        box: {
-          x: Number(det.x.toFixed(1)),
-          y: Number(det.y.toFixed(1)),
-          w: Number(det.width.toFixed(1)),
-          h: Number(det.height.toFixed(1)),
-        },
-      })));
     } catch (error) {
       console.error('❌ Inference error:', error);
     } finally {
-      setIsInferencing(false);
+      const dt = Date.now() - t0;
+      lastInferenceDurationShared.value = Math.max(20, Math.min(200, dt));
+      if (!isLiveMode) {
+        setIsInferencing(false);
+      }
       isInferencingShared.value = false;
-      console.log('✅ Inference complete, flags reset');
+      isInferenceRunningJSShared.value = false;
+      inferenceStartedAt.value = 0;
     }
   };
 
-  const runInferenceOnJS = useRunOnJS(handleInferenceOnJS, [isModelLoaded]);
+  const runInferenceOnJS = useRunOnJS(handleInferenceOnJS, [isModelLoaded, currentPos]);
   const updateFpsOnJS = useRunOnJS((value: number) => {
     setFps(value);
   }, []);
@@ -430,6 +486,15 @@ export default function CameraFullScreen() {
   const frameProcessor = useFrameProcessor((frame: Frame) => {
     'worklet';
     const now = Date.now();
+    if (
+      isInferencingShared.value &&
+      !isInferenceRunningJSShared.value &&
+      inferenceStartedAt.value > 0 &&
+      now - inferenceStartedAt.value > INFERENCE_WATCHDOG_MS
+    ) {
+      isInferencingShared.value = false;
+      inferenceStartedAt.value = 0;
+    }
     if (fpsLastTimestamp.value === 0) {
       fpsLastTimestamp.value = now;
     }
@@ -448,11 +513,12 @@ export default function CameraFullScreen() {
 
     // Handle single-shot inference (triggered by button)
     if (singleShotRequestId.value !== lastProcessedRequestId.value) {
-      if (isInferencingShared.value) {
+      if (isInferencingShared.value || isInferenceRunningJSShared.value) {
         return; // Skip if already inferencing
       }
       lastProcessedRequestId.value = singleShotRequestId.value;
       isInferencingShared.value = true;
+      inferenceStartedAt.value = now;
 
       const maxSide = frame.width > frame.height ? frame.width : frame.height;
       const scale = 640 / maxSide;
@@ -473,7 +539,8 @@ export default function CameraFullScreen() {
             padX,
             padY,
             scale,
-            true
+            true,
+            false
           );
           return;
         }
@@ -487,6 +554,7 @@ export default function CameraFullScreen() {
       });
       if (!rgbData || rgbData.length === 0) {
         isInferencingShared.value = false;
+        inferenceStartedAt.value = 0;
         return;
       }
       const length = rgbData.length;
@@ -503,19 +571,21 @@ export default function CameraFullScreen() {
         padX,
         padY,
         scale,
+        false,
         false
       );
       return;
     }
 
-    // Handle live inference (throttled to 1 FPS = every 1000ms)
-    if (isLiveInferenceShared.value && !isInferencingShared.value) {
+    // Handle live inference with adaptive pacing.
+    if (isLiveInferenceShared.value && !isInferencingShared.value && !isInferenceRunningJSShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = 40; // 25 FPS
+      const inferenceInterval = Math.max(40, lastInferenceDurationShared.value);
       
       if (timeSinceLastInference >= inferenceInterval) {
         lastLiveInferenceTime.value = now;
         isInferencingShared.value = true;
+        inferenceStartedAt.value = now;
 
         const maxSide = frame.width > frame.height ? frame.width : frame.height;
         const scale = 640 / maxSide;
@@ -536,11 +606,15 @@ export default function CameraFullScreen() {
               padX,
               padY,
               scale,
+              true,
               true
             );
             return;
           }
-          // Plugin returned null/empty (e.g. CoreML not loaded, only TFLite) — fall through to resize + TFLite path
+          // Avoid expensive fallback in live mode when plugin is present but returns empty.
+          isInferencingShared.value = false;
+          inferenceStartedAt.value = 0;
+          return;
         }
 
         const rgbData = resizePlugin.resize(frame, {
@@ -550,6 +624,7 @@ export default function CameraFullScreen() {
         });
         if (!rgbData || rgbData.length === 0) {
           isInferencingShared.value = false;
+          inferenceStartedAt.value = 0;
           return;
         }
         const length = rgbData.length;
@@ -566,11 +641,31 @@ export default function CameraFullScreen() {
           padX,
           padY,
           scale,
-          false
+          false,
+          true
         );
       }
     }
   }, [runInferenceOnJS, runYOLOFromFramePlugin]);
+
+  const handleExportPidCsv = async () => {
+    try {
+      const isSharingAvailable = await Sharing.isAvailableAsync();
+      if (!isSharingAvailable) {
+        Alert.alert('Export unavailable', 'Share sheet is not available on this device.');
+        return;
+      }
+      const csvUri = await preparePidTelemetryCsvForExport();
+      await Sharing.shareAsync(csvUri, {
+        mimeType: 'text/csv',
+        dialogTitle: 'Export PID telemetry CSV',
+        UTI: 'public.comma-separated-values-text',
+      });
+    } catch (error) {
+      console.error('❌ Failed to export PID CSV:', error);
+      Alert.alert('Export failed', 'Could not export PID telemetry CSV.');
+    }
+  };
 
 
   if (!hasPermission) {
@@ -698,6 +793,13 @@ export default function CameraFullScreen() {
           <ThemedText style={styles.buttonText}>
             {isSnapshotting ? 'Saving…' : isInferencing ? 'Running…' : 'Snap Inference'}
           </ThemedText>
+        </Pressable>
+        <Pressable
+          style={styles.button}
+          onPress={handleExportPidCsv}
+          pointerEvents="auto"
+        >
+          <ThemedText style={styles.buttonText}>Export PID CSV</ThemedText>
         </Pressable>
         <ThemedText style={styles.debugText}>
           Last inference: {lastInferenceAt ? new Date(lastInferenceAt).toLocaleTimeString() : '—'}
