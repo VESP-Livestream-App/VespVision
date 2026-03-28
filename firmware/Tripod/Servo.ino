@@ -61,4 +61,3 @@ int getServoAngle()
 {
   return mgs90.read();
 }
-
