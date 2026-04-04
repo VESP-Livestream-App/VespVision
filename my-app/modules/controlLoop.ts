@@ -40,7 +40,7 @@ export class ControlLoop {
   private readonly planeDegrees: number;
   private readonly edgeRedundancyFactor: number;
   private readonly searchModeDelayMs: number;
-  private readonly movementThreshold: number = 5.0;
+  private readonly movementThreshold: number = 0.0;
   
   private readonly servo: Servo;
   private readonly controller: PIDController;
@@ -62,10 +62,10 @@ export class ControlLoop {
     const {
       fieldOfView = 70,
       servoSpeed = 40.0,
-      kp = 5.50 * fieldOfView,
-      ki = 0.5 * fieldOfView,
-      kd = 0.05 * fieldOfView,
-      derivativeBufferSize = 3,
+      kp = 0.40 * fieldOfView,
+      ki = 0.03 * fieldOfView,
+      kd = 0.08 * fieldOfView,
+      derivativeBufferSize = 1,
       frameWidth = 640,
       planeDegrees = 180,
       edgeViewRedundancyFactor = 0.25,
@@ -160,6 +160,7 @@ export class ControlLoop {
     );
     
     // If no ball detected, enter search mode
+    console.log(ballDetection, this.state.isTracking, this.state.isSearching);
     if (!ballDetection) {
       // Clear PID history while target is missing so stale integral/derivative
       // values do not cause jumps when detections resume.

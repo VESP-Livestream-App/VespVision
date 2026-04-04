@@ -32,6 +32,7 @@ import { createResizePlugin } from 'vision-camera-resize-plugin';
 
 const CONTROL_FIELD_OF_VIEW = 70;
 const BALL_LABELS = ['sports ball', 'basketball', 'soccer ball', 'tennis ball'];
+const MIN_DETECTION_CONFIDENCE = 0.7;
 
 const getDetectedBallAngleFromDetections = (
   allDetections: Detection[],
@@ -352,6 +353,7 @@ export default function CameraFullScreen() {
         const padded = padToSquare(payload, resizedWidth, resizedHeight, padX, padY);
         detections = await runYoloInference(padded, 640, 640);
       }
+      console.log("Inference completed");
       const corrected = detections.map((det) => {
         const x = (det.x - padX) / scale;
         const y = (det.y - padY) / scale;
@@ -365,12 +367,13 @@ export default function CameraFullScreen() {
           height: Math.max(1, Math.min(frameHeight, height)),
         };
       });
-      const detectedBallAngle = getDetectedBallAngleFromDetections(corrected, frameWidth, currentPos);
+      const filtered = corrected.filter((det) => det.confidence >= MIN_DETECTION_CONFIDENCE);
+      const detectedBallAngle = getDetectedBallAngleFromDetections(filtered, frameWidth, currentPos);
       appendPidTelemetryRow(detectedBallAngle, lastSentServoCommandAngleRef.current).catch((error) => {
         console.error('❌ Failed to append PID telemetry row:', error);
       });
-      setDetections(corrected);
-      setBallSide(getBallSide(corrected, frameWidth));
+      setDetections(filtered);
+      setBallSide(getBallSide(filtered, frameWidth));
       setLastFrameSize({ width: frameWidth, height: frameHeight });
       setLastInferenceAt(Date.now());
     } catch (error) {
@@ -388,6 +391,12 @@ export default function CameraFullScreen() {
   };
 
   const runInferenceOnJS = useRunOnJS(handleInferenceOnJS, [isModelLoaded, currentPos]);
+  const publishNoDetectionsOnJS = useRunOnJS((frameWidth: number, frameHeight: number) => {
+    setDetections([]);
+    setBallSide(null);
+    setLastFrameSize({ width: frameWidth, height: frameHeight });
+    setLastInferenceAt(Date.now());
+  }, []);
   const updateFpsOnJS = useRunOnJS((value: number) => {
     setFps(value);
   }, []);
@@ -467,11 +476,12 @@ export default function CameraFullScreen() {
           height: Math.max(1, Math.min(origHeight, height)),
         };
       });
+      const filtered = corrected.filter((det) => det.confidence >= MIN_DETECTION_CONFIDENCE);
       const runAt = Date.now();
       addSnapshot({
         id: `snap-${runAt}`,
         uri: photoUri,
-        detections: corrected,
+        detections: filtered,
         runAt,
         width: origWidth,
         height: origHeight,
@@ -580,7 +590,7 @@ export default function CameraFullScreen() {
     // Handle live inference with adaptive pacing.
     if (isLiveInferenceShared.value && !isInferencingShared.value && !isInferenceRunningJSShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = Math.max(40, lastInferenceDurationShared.value);
+      const inferenceInterval = Math.max(125, lastInferenceDurationShared.value);
       
       if (timeSinceLastInference >= inferenceInterval) {
         lastLiveInferenceTime.value = now;
@@ -611,6 +621,8 @@ export default function CameraFullScreen() {
             );
             return;
           }
+          // Plugin returned empty: still publish a no-detection frame so control loop can enter search mode.
+          publishNoDetectionsOnJS(frame.width, frame.height);
           // Avoid expensive fallback in live mode when plugin is present but returns empty.
           isInferencingShared.value = false;
           inferenceStartedAt.value = 0;

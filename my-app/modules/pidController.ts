@@ -146,7 +146,8 @@ export class PIDController {
       }
     }
     
-    // Final control signal
+    // Final control 
+    console.log(`PID computeControl: P=${proportional.toFixed(2)} I=${integral.toFixed(2)} D=${derivative.toFixed(2)} (error=${clampedError.toFixed(2)}, dt=${dt.toFixed(3)})`);
     const controlSignal = proportional + integral + derivative;
     if (Math.abs(controlSignal) < this.outputDeadband) {
       // Undo integral accumulation for this frame to avoid windup in deadband.
