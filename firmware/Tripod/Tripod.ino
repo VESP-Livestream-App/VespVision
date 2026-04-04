@@ -23,6 +23,7 @@ moveCmd_u moveCmd =
 BLEDevice central;
 // static unsigned long lastSampleMs = 0;
 // static unsigned long lastDisplayMs = 0;
+extern volatile bool newCmdReady;
 
 // forward declarations
 void setServo(int angle, unsigned long durationMs);
@@ -67,8 +68,9 @@ void loop() {
   // If connected, handle commands
   if (central && central.connected()) 
   {
-    if (checkNewCmd()) 
+    if (newCmdReady) 
     {
+      newCmdReady = false;
       adjustServo(moveCmd.cmd.angle, moveCmd.cmd.time);
     }
 
