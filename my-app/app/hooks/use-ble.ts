@@ -287,7 +287,7 @@ export default function useBle() {
       dv.setUint32(4, timeMs >>> 0, true);
       const bytes = new Uint8Array(buf);
       const b64 = base64FromBytes(bytes);
-      await bleManager.writeCharacteristicWithResponseForDevice(deviceId, TARGET_SERVICE_UUID, TARGET_CHARACTERISTIC_UUID, b64);
+      bleManager.writeCharacteristicWithoutResponseForDevice(deviceId, TARGET_SERVICE_UUID, TARGET_CHARACTERISTIC_UUID, b64);
     } catch (err: any) { console.warn('write error', err); }
   }, []);
 
