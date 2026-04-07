@@ -13,37 +13,39 @@ export const getActiveBackend = (): InferenceBackend => activeBackend;
 export const loadYoloModel = async (): Promise<boolean> => {
   if (Platform.OS === 'ios' && isCoreMLAvailable() && CoreML) {
     try {
-      console.log('🔄 Attempting to load Core ML model:', CORE_ML_MODEL_NAME);
+      // console.log('🔄 Attempting to load Core ML model:', CORE_ML_MODEL_NAME);
       const loaded = await CoreML.loadModel(CORE_ML_MODEL_NAME);
       if (loaded === true) {
         activeBackend = 'coreml';
-        console.log('✅ Core ML model loaded (Neural Engine)');
+        // console.log('✅ Core ML model loaded (Neural Engine)');
         return true;
       }
-      console.warn('⚠️ Core ML loadModel returned false (model not found?)');
+      // console.warn('⚠️ Core ML loadModel returned false (model not found?)');
     } catch (error: unknown) {
-      const msg = error instanceof Error ? error.message : String(error);
-      const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: string }).code : undefined;
-      console.warn('⚠️ Core ML load failed, falling back to TFLite:', code ?? msg, error);
+      // const msg = error instanceof Error ? error.message : String(error);
+      // const code = error && typeof error === 'object' && 'code' in error ? (error as { code?: string }).code : undefined;
+      // console.warn('⚠️ Core ML load failed, falling back to TFLite:', code ?? msg, error);
+      void error;
     }
   }
 
   if (!isTFLiteAvailable() || !TFLite) {
-    console.warn('TFLite module is not available');
+    // console.warn('TFLite module is not available');
     return false;
   }
 
   try {
-    console.log('🔄 Loading TFLite model:', YOLO_MODEL_FILENAME);
+    // console.log('🔄 Loading TFLite model:', YOLO_MODEL_FILENAME);
     const loaded = await TFLite.loadModel(YOLO_MODEL_FILENAME);
     if (loaded === true) {
       activeBackend = 'tflite';
-      console.log('✅ TFLite model loaded successfully');
+      // console.log('✅ TFLite model loaded successfully');
       return true;
     }
     return false;
   } catch (error: unknown) {
-    console.error('❌ TFLite loadModel error:', error);
+    // console.error('❌ TFLite loadModel error:', error);
+    void error;
     return false;
   }
 };
@@ -53,13 +55,15 @@ export const closeYoloModel = async (): Promise<void> => {
     try {
       await CoreML.close();
     } catch (error) {
-      console.error('❌ Failed to close Core ML model:', error);
+      // console.error('❌ Failed to close Core ML model:', error);
+      void error;
     }
   } else if (TFLite) {
     try {
       await TFLite.close();
     } catch (error) {
-      console.error('❌ Failed to close TFLite model:', error);
+      // console.error('❌ Failed to close TFLite model:', error);
+      void error;
     }
   }
   activeBackend = null;

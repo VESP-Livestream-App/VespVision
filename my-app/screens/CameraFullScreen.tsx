@@ -87,11 +87,13 @@ export default function CameraFullScreen() {
 
   useEffect(() => {
     const rawFov = device?.formats?.[0]?.fieldOfView;
-    const usingFallback = rawFov === undefined || rawFov === null;
-    console.log(
-      `📷 Camera FOV selected: ${deviceFieldOfView.toFixed(2)}° (${usingFallback ? 'fallback' : 'device format'})`,
-      { rawFormatFieldOfView: rawFov ?? null }
-    );
+    // const usingFallback = rawFov === undefined || rawFov === null;
+    // console.log(
+    //   `📷 Camera FOV selected: ${deviceFieldOfView.toFixed(2)}° (${usingFallback ? 'fallback' : 'device format'})`,
+    //   { rawFormatFieldOfView: rawFov ?? null }
+    // );
+    void rawFov;
+    void deviceFieldOfView;
   }, [device, deviceFieldOfView]);
   const [isActive, setIsActive] = useState(true);
   const [detections, setDetections] = useState<Detection[]>([]);
@@ -175,6 +177,13 @@ export default function CameraFullScreen() {
     };
   }, []);
 
+  useEffect(() => {
+    const id = setInterval(() => {
+      console.log(`📷 [CameraFullScreen] ${new Date().toISOString()} FPS=${fps}`);
+    }, 10000);
+    return () => clearInterval(id);
+  }, [fps]);
+
   // Pause camera when screen is not focused or app is in background
   useFocusEffect(
     React.useCallback(() => {
@@ -234,7 +243,8 @@ export default function CameraFullScreen() {
     bleServiceRef.current.initialize(async (deviceId, angle, timeMs) => {
       await sendAngleTime(deviceId, angle, timeMs);
     });
-    console.log(`📄 PID telemetry CSV will be written to: ${getPidTelemetryCsvPath()}`);
+    // console.log(`📄 PID telemetry CSV will be written to: ${getPidTelemetryCsvPath()}`);
+    void getPidTelemetryCsvPath;
 
     return () => {
       // Cleanup
@@ -277,7 +287,8 @@ export default function CameraFullScreen() {
 
     // Send turn signal via BLE
     sendTurnSignal(turnSignalData.value, turnSignalData.hasBall).catch((error) => {
-      console.error('❌ Failed to send turn signal via BLE:', error);
+      // console.error('❌ Failed to send turn signal via BLE:', error);
+      void error;
     });
   }, [detections, lastFrameSize.width]);
 
@@ -305,10 +316,11 @@ export default function CameraFullScreen() {
         if (wasSent) {
           lastSentServoCommandAngleRef.current = command.angle;
         } else {
-          console.log('⚠️ Control command not sent (rate limit/disconnected).');
+          // console.log('⚠️ Control command not sent (rate limit/disconnected).');
         }
       }).catch((error) => {
-        console.error('❌ Failed to send control command via BLE:', error);
+        // console.error('❌ Failed to send control command via BLE:', error);
+        void error;
       });
     }
   }, [detections]);
@@ -328,14 +340,14 @@ export default function CameraFullScreen() {
     const t0 = Date.now();
     isInferenceRunningJSShared.value = true;
     if (!isModelLoaded) {
-      console.log('❌ Inference skipped: model not loaded');
+      // console.log('❌ Inference skipped: model not loaded');
       isInferencingShared.value = false;
       isInferenceRunningJSShared.value = false;
       inferenceStartedAt.value = 0;
       return;
     }
     if (!payload || payload.length === 0) {
-      console.warn('❌ Inference skipped: empty payload');
+      // console.warn('❌ Inference skipped: empty payload');
       isInferencingShared.value = false;
       isInferenceRunningJSShared.value = false;
       inferenceStartedAt.value = 0;
@@ -360,7 +372,6 @@ export default function CameraFullScreen() {
         const padded = padToSquare(payload, resizedWidth, resizedHeight, padX, padY);
         detections = await runYoloInference(padded, 640, 640);
       }
-      console.log(`🔎 [InferenceRaw] detections=${JSON.stringify(detections)}`);
       const corrected = detections.map((det) => {
         const x = (det.x - padX) / scale;
         const y = (det.y - padY) / scale;
@@ -375,6 +386,7 @@ export default function CameraFullScreen() {
         };
       });
       const detectedBallAngle = getDetectedBallAngleFromDetections(corrected, frameWidth, currentPos);
+      // console.log(`🔎 [InferenceRaw] detections=${JSON.stringify(detections)}`);
       void detectedBallAngle;
       // Temporarily disabled during performance testing.
       // appendPidTelemetryRow(detectedBallAngle, lastSentServoCommandAngleRef.current).catch((error) => {
@@ -385,7 +397,8 @@ export default function CameraFullScreen() {
       setLastFrameSize({ width: frameWidth, height: frameHeight });
       setLastInferenceAt(Date.now());
     } catch (error) {
-      console.error('❌ Inference error:', error);
+      // console.error('❌ Inference error:', error);
+      void error;
     } finally {
       const dt = Date.now() - t0;
       // Keep true runtime (no upper cap) so pacing reflects actual inference cost.
@@ -420,10 +433,16 @@ export default function CameraFullScreen() {
     if (total <= 0) {
       return;
     }
-    const pluginRate = ((pluginSuccess / total) * 100).toFixed(1);
-    console.log(
-      `📈 [InferencePath] ${windowMs}ms window | plugin_ok=${pluginSuccess} plugin_empty=${pluginEmpty} fallback=${fallback} plugin_ok_rate=${pluginRate}% last_inference=${lastInferenceMs}ms`
-    );
+    // const pluginRate = ((pluginSuccess / total) * 100).toFixed(1);
+    // console.log(
+    //   `📈 [InferencePath] ${windowMs}ms window | plugin_ok=${pluginSuccess} plugin_empty=${pluginEmpty} fallback=${fallback} plugin_ok_rate=${pluginRate}% last_inference=${lastInferenceMs}ms`
+    // );
+    void windowMs;
+    void lastInferenceMs;
+    void pluginSuccess;
+    void pluginEmpty;
+    void fallback;
+    void total;
   }, []);
 
   const resizePlugin = useMemo(() => createResizePlugin(), []);
@@ -433,11 +452,12 @@ export default function CameraFullScreen() {
   );
 
   useEffect(() => {
-    if (runYOLOFromFramePlugin) {
-      console.log('LOG  ✅ Native frame plugin (runYOLOFromFrame) loaded — using fast inference path');
-    } else {
-      console.log('LOG  ⚠️ Native frame plugin not available — using bridge path (slower). Rebuild iOS app with plugin.');
-    }
+    // if (runYOLOFromFramePlugin) {
+    //   console.log('LOG  ✅ Native frame plugin (runYOLOFromFrame) loaded — using fast inference path');
+    // } else {
+    //   console.log('LOG  ⚠️ Native frame plugin not available — using bridge path (slower). Rebuild iOS app with plugin.');
+    // }
+    void runYOLOFromFramePlugin;
   }, [runYOLOFromFramePlugin]);
 
   const padToSquare = (
@@ -512,7 +532,8 @@ export default function CameraFullScreen() {
         height: origHeight,
       });
     } catch (error) {
-      console.error('Snapshot inference failed:', error);
+      // console.error('Snapshot inference failed:', error);
+      void error;
     } finally {
       setIsSnapshotting(false);
     }
@@ -651,7 +672,7 @@ export default function CameraFullScreen() {
       const inferenceInterval = Math.max(100, lastInferenceDurationShared.value);
       
       if (timeSinceLastInference >= inferenceInterval) {
-        console.log("🔍 [CameraFullScreen] Inference interval:", timeSinceLastInference, inferenceInterval);
+        // console.log("🔍 [CameraFullScreen] Inference interval:", timeSinceLastInference, inferenceInterval);
         lastLiveInferenceTime.value = now;
         isInferencingShared.value = true;
         inferenceStartedAt.value = now;
@@ -741,7 +762,8 @@ export default function CameraFullScreen() {
         UTI: 'public.comma-separated-values-text',
       });
     } catch (error) {
-      console.error('❌ Failed to export PID CSV:', error);
+      // console.error('❌ Failed to export PID CSV:', error);
+      void error;
       Alert.alert('Export failed', 'Could not export PID telemetry CSV.');
     }
   };

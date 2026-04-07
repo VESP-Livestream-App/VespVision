@@ -39,11 +39,11 @@ const preprocessRgb = withProfiling('preprocessRgb', (rgbData: ArrayLike<number>
 
   if (!hasLoggedInputStats) {
     hasLoggedInputStats = true;
-    console.log('🔎 YOLO input stats', {
-      normalize,
-      rgbOrder,
-      firstPixel: [out[0], out[1], out[2]],
-    });
+    // console.log('🔎 YOLO input stats', {
+    //   normalize,
+    //   rgbOrder,
+    //   firstPixel: [out[0], out[1], out[2]],
+    // });
   }
 
   return out;
@@ -58,7 +58,7 @@ export const runYoloInference = async (
   const backend = getActiveBackend();
   const inferModule = backend === 'coreml' ? CoreML : TFLite;
   if (!inferModule) {
-    console.warn('No inference backend available (Core ML or TFLite)');
+    // console.warn('No inference backend available (Core ML or TFLite)');
     return [];
   }
 
@@ -70,7 +70,7 @@ export const runYoloInference = async (
   endInferenceTimer();
   
   if (!output) {
-    console.warn('Inference returned no output');
+    // console.warn('Inference returned no output');
     return [];
   }
 
@@ -100,7 +100,7 @@ export const normalizeOutputLayout = (output: number[]): number[] => {
   const layout = detectLayout(output, numPredictions, numValues);
   if (!hasLoggedLayoutStats) {
     hasLoggedLayoutStats = true;
-    console.log('🔎 YOLO output layout', { layout, numPredictions, numValues });
+    // console.log('🔎 YOLO output layout', { layout, numPredictions, numValues });
   }
 
   if (layout === 'predMajor') {
@@ -149,10 +149,10 @@ const detectLayout = (output: number[], numPredictions: number, numValues: numbe
   const classMajorStats = scoreStats('classMajor');
 
   if (!hasLoggedLayoutStats) {
-    console.log('🔎 YOLO score stats', {
-      predMajor: predMajorStats,
-      classMajor: classMajorStats,
-    });
+    // console.log('🔎 YOLO score stats', {
+    //   predMajor: predMajorStats,
+    //   classMajor: classMajorStats,
+    // });
   }
 
   return classMajorStats.inRange > predMajorStats.inRange ? 'classMajor' : 'predMajor';
@@ -178,9 +178,9 @@ const logOutputStats = (output: number[]) => {
     }
     checked += 1;
   }
-  console.log('🔎 YOLO output stats', {
-    min: Number(min.toFixed(4)),
-    max: Number(max.toFixed(4)),
-    inRangeRatio: Number((inRange / checked).toFixed(3)),
-  });
+  // console.log('🔎 YOLO output stats', {
+  //   min: Number(min.toFixed(4)),
+  //   max: Number(max.toFixed(4)),
+  //   inRangeRatio: Number((inRange / checked).toFixed(3)),
+  // });
 };

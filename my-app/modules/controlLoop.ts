@@ -182,7 +182,6 @@ export class ControlLoop {
     );
     const ballDetection = ballCandidate?.det ?? null;
     if (!ballDetection) {
-      console.log('⚪ [Control] No ball detected');
       this.consecutiveMisses += 1;
       // Clear PID history while target is missing so stale integral/derivative
       // values do not cause jumps when detections resume.
@@ -206,11 +205,6 @@ export class ControlLoop {
         this.servo.setSearchTarget(clampedTarget);
         this.state.targetAngle = this.servo.targetPos;
         const timeMs = this.servo.getTimeToTarget(currentServoPos);
-        console.log('🔍 [Control] Searching...');
-        console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
-        console.log(`   Search direction: ${this.searchDirection > 0 ? 'left-to-right' : 'right-to-left'}`);
-        console.log(`   Target angle: ${this.servo.targetPos.toFixed(2)}°`);
-        console.log(`   Time to move: ${timeMs}ms`);
         return { angle: this.servo.targetPos, timeMs };
       }
       
@@ -227,8 +221,6 @@ export class ControlLoop {
           return null;
         }
 
-        console.log('🎯 [Control] Target lost - entering search mode');
-        console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
         this.state.isTracking = false;
         this.state.isSearching = true;
         this.lastValidRadial = null;
@@ -244,11 +236,6 @@ export class ControlLoop {
         
         this.state.targetAngle = this.servo.targetPos;
         const timeMs = this.servo.getTimeToTarget(currentServoPos);
-        
-        console.log(`   Search direction: ${this.searchDirection > 0 ? 'left-to-right' : 'right-to-left'}`);
-        console.log(`   Target angle: ${this.servo.targetPos.toFixed(2)}°`);
-        console.log(`   Time to move: ${timeMs}ms`);
-        
         return { angle: this.servo.targetPos, timeMs };
       }
       return null;
@@ -275,7 +262,6 @@ export class ControlLoop {
     // Target is visible - track it
     if (this.state.isSearching || !this.state.isTracking) {
       // Just found target - exit search mode
-      console.log('✅ [Control] Target found - exiting search mode');
       this.state.isSearching = false;
       this.state.isTracking = true;
     }
@@ -346,12 +332,10 @@ export class ControlLoop {
       .filter((det) => BALL_LABELS.includes(String(det.className ?? det.class).toLowerCase()))
       .map((det) => {
         if (det.width < this.minDetectionWidthPx) {
-          console.log(`🧪 [DetScore] reject(small_width) width=${det.width.toFixed(2)} minWidth=${this.minDetectionWidthPx.toFixed(2)}`);
           return null;
         }
         const confidence = Number.isFinite(det.confidence) ? det.confidence : 0;
-        const passesConfidenceCutoff = confidence >= 0.5;
-
+        const passesConfidenceCutoff = confidence >= 0.35;
         const ballCenterX = det.x + det.width / 2;
         const fovAngle = this.pixelToAngle(ballCenterX, frameWidth);
         const worldAngleDeg = currentServoPos - this.fieldOfView / 2 + fovAngle;
@@ -361,7 +345,7 @@ export class ControlLoop {
         const tanHalfFov = Math.max(1e-3, Math.tan((this.fieldOfView * Math.PI) / 360));
         const r = 1 / (safeWidthNorm * tanHalfFov);
 
-        const confidenceScore = Math.max(0, Math.min(1, (confidence - 0.3) / 0.7));
+        const confidenceScore = Math.max(0, Math.min(1, (confidence - 0.2) / 0.8));
         let motionScore = 0.5;
         let speed = 0;
         if (this.lastValidRadial) {
@@ -386,10 +370,7 @@ export class ControlLoop {
           motionScore = 1 / (1 + (speed / speedScale) * (speed / speedScale));
         }
 
-        const totalScore = 0.55 * confidenceScore + 0.45 * motionScore;
-        console.log(
-          `🧪 [DetScore] conf=${confidence.toFixed(3)} confS=${confidenceScore.toFixed(3)} motionS=${motionScore.toFixed(3)} speed=${speed.toFixed(3)} total=${totalScore.toFixed(3)} passConf=${passesConfidenceCutoff}`
-        );
+        const totalScore = 0.6 * confidenceScore + 0.4 * motionScore;
         if (!passesConfidenceCutoff) {
           return null;
         }
@@ -402,7 +383,7 @@ export class ControlLoop {
       return null;
     }
     const best = candidates[0];
-    const threshold = this.lastValidRadial ? 0.55 : 0.5;
+    const threshold = this.lastValidRadial ? 0.60 : 0.42;
     if (best.totalScore < threshold) {
       return null;
     }
