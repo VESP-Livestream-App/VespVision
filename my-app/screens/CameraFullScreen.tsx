@@ -6,7 +6,7 @@ import { sendTurnSignal } from '@/modules/bleClient';
 import { getBLEControlService } from '@/modules/bleControlService';
 import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
 import { ControlLoop } from '@/modules/controlLoop';
-import { appendPidTelemetryRow, getPidTelemetryCsvPath, preparePidTelemetryCsvForExport } from '@/modules/pidTelemetry';
+import { getPidTelemetryCsvPath, preparePidTelemetryCsvForExport } from '@/modules/pidTelemetry';
 import { addSnapshot } from '@/modules/snapshotStore';
 import { normalizeOutputLayout, runYoloInference } from '@/modules/yoloInference';
 import { closeYoloModel, loadYoloModel } from '@/modules/yoloModel';
@@ -117,6 +117,12 @@ export default function CameraFullScreen() {
   const inferenceStartedAt = useSharedValue(0);
   const lastInferenceDurationShared = useSharedValue(40);
   const INFERENCE_WATCHDOG_MS = 1200;
+  
+  const INFERENCE_PATH_LOG_INTERVAL_MS = 3000;
+  const pluginSuccessCountShared = useSharedValue(0);
+  const pluginEmptyCountShared = useSharedValue(0);
+  const fallbackCountShared = useSharedValue(0);
+  const inferencePathWindowStartMsShared = useSharedValue(0);
 
   // BLE integration for control loop
   const {
@@ -221,7 +227,7 @@ export default function CameraFullScreen() {
       frameWidth: lastFrameSize.width || 640,
       planeDegrees: 180,
       edgeViewRedundancyFactor: 0.25,
-      searchModeDelayMs: 3000,
+      searchModeDelayMs: 1500,
     });
 
     // Initialize BLE service with sendAngleTime callback
@@ -253,7 +259,7 @@ export default function CameraFullScreen() {
         frameWidth: lastFrameSize.width,
         planeDegrees: 180,
         edgeViewRedundancyFactor: 0.25,
-        searchModeDelayMs: 3000,
+        searchModeDelayMs: 1500,
       });
     }
   }, [lastFrameSize.width, deviceFieldOfView]);
@@ -289,7 +295,8 @@ export default function CameraFullScreen() {
     const command = controlLoopRef.current.update(
       detections,
       currentPos,
-      lastFrameSize.width
+      lastFrameSize.width,
+      deviceFieldOfView
     );
 
     if (command) {
@@ -353,7 +360,7 @@ export default function CameraFullScreen() {
         const padded = padToSquare(payload, resizedWidth, resizedHeight, padX, padY);
         detections = await runYoloInference(padded, 640, 640);
       }
-      console.log("Inference completed");
+      console.log(`🔎 [InferenceRaw] detections=${JSON.stringify(detections)}`);
       const corrected = detections.map((det) => {
         const x = (det.x - padX) / scale;
         const y = (det.y - padY) / scale;
@@ -367,20 +374,22 @@ export default function CameraFullScreen() {
           height: Math.max(1, Math.min(frameHeight, height)),
         };
       });
-      const filtered = corrected.filter((det) => det.confidence >= MIN_DETECTION_CONFIDENCE);
-      const detectedBallAngle = getDetectedBallAngleFromDetections(filtered, frameWidth, currentPos);
-      appendPidTelemetryRow(detectedBallAngle, lastSentServoCommandAngleRef.current).catch((error) => {
-        console.error('❌ Failed to append PID telemetry row:', error);
-      });
-      setDetections(filtered);
-      setBallSide(getBallSide(filtered, frameWidth));
+      const detectedBallAngle = getDetectedBallAngleFromDetections(corrected, frameWidth, currentPos);
+      void detectedBallAngle;
+      // Temporarily disabled during performance testing.
+      // appendPidTelemetryRow(detectedBallAngle, lastSentServoCommandAngleRef.current).catch((error) => {
+      //   console.error('❌ Failed to append PID telemetry row:', error);
+      // });
+      setDetections(corrected);
+      setBallSide(getBallSide(corrected, frameWidth));
       setLastFrameSize({ width: frameWidth, height: frameHeight });
       setLastInferenceAt(Date.now());
     } catch (error) {
       console.error('❌ Inference error:', error);
     } finally {
       const dt = Date.now() - t0;
-      lastInferenceDurationShared.value = Math.max(20, Math.min(200, dt));
+      // Keep true runtime (no upper cap) so pacing reflects actual inference cost.
+      lastInferenceDurationShared.value = Math.max(20, dt);
       if (!isLiveMode) {
         setIsInferencing(false);
       }
@@ -399,6 +408,22 @@ export default function CameraFullScreen() {
   }, []);
   const updateFpsOnJS = useRunOnJS((value: number) => {
     setFps(value);
+  }, []);
+  const reportInferencePathStatsOnJS = useRunOnJS((
+    pluginSuccess: number,
+    pluginEmpty: number,
+    fallback: number,
+    windowMs: number,
+    lastInferenceMs: number
+  ) => {
+    const total = pluginSuccess + pluginEmpty;
+    if (total <= 0) {
+      return;
+    }
+    const pluginRate = ((pluginSuccess / total) * 100).toFixed(1);
+    console.log(
+      `📈 [InferencePath] ${windowMs}ms window | plugin_ok=${pluginSuccess} plugin_empty=${pluginEmpty} fallback=${fallback} plugin_ok_rate=${pluginRate}% last_inference=${lastInferenceMs}ms`
+    );
   }, []);
 
   const resizePlugin = useMemo(() => createResizePlugin(), []);
@@ -496,6 +521,26 @@ export default function CameraFullScreen() {
   const frameProcessor = useFrameProcessor((frame: Frame) => {
     'worklet';
     const now = Date.now();
+    const pathTotal = pluginSuccessCountShared.value + pluginEmptyCountShared.value;
+    if (pathTotal > 0) {
+      if (inferencePathWindowStartMsShared.value === 0) {
+        inferencePathWindowStartMsShared.value = now;
+      }
+      const windowMs = now - inferencePathWindowStartMsShared.value;
+      if (windowMs >= INFERENCE_PATH_LOG_INTERVAL_MS) {
+        reportInferencePathStatsOnJS(
+          pluginSuccessCountShared.value,
+          pluginEmptyCountShared.value,
+          fallbackCountShared.value,
+          windowMs,
+          Math.round(lastInferenceDurationShared.value)
+        );
+        pluginSuccessCountShared.value = 0;
+        pluginEmptyCountShared.value = 0;
+        fallbackCountShared.value = 0;
+        inferencePathWindowStartMsShared.value = now;
+      }
+    }
     if (
       isInferencingShared.value &&
       !isInferenceRunningJSShared.value &&
@@ -539,22 +584,35 @@ export default function CameraFullScreen() {
 
       if (runYOLOFromFramePlugin) {
         const rawOutput = runYOLOFromFramePlugin.call(frame) as number[] | undefined;
-        if (rawOutput && rawOutput.length > 0) {
-          runInferenceOnJS(
-            rawOutput,
-            frame.width,
-            frame.height,
-            resizedWidth,
-            resizedHeight,
-            padX,
-            padY,
-            scale,
-            true,
-            false
-          );
+        if (Array.isArray(rawOutput)) {
+          if (rawOutput.length > 0) {
+            pluginSuccessCountShared.value += 1;
+            runInferenceOnJS(
+              rawOutput,
+              frame.width,
+              frame.height,
+              resizedWidth,
+              resizedHeight,
+              padX,
+              padY,
+              scale,
+              true,
+              false
+            );
+            return;
+          }
+          // Empty array from native path means "no detections", not plugin failure.
+          pluginEmptyCountShared.value += 1;
+          publishNoDetectionsOnJS(frame.width, frame.height);
+          isInferencingShared.value = false;
+          inferenceStartedAt.value = 0;
           return;
         }
-        // Plugin returned null/empty (e.g. CoreML not loaded, only TFLite) — fall through to resize + TFLite path
+        // Null/undefined means plugin failed to produce output.
+        fallbackCountShared.value += 1;
+        // Fall through to resize + bridge path.
+      } else {
+        fallbackCountShared.value += 1;
       }
 
       const rgbData = resizePlugin.resize(frame, {
@@ -590,9 +648,10 @@ export default function CameraFullScreen() {
     // Handle live inference with adaptive pacing.
     if (isLiveInferenceShared.value && !isInferencingShared.value && !isInferenceRunningJSShared.value) {
       const timeSinceLastInference = now - lastLiveInferenceTime.value;
-      const inferenceInterval = Math.max(125, lastInferenceDurationShared.value);
+      const inferenceInterval = Math.max(100, lastInferenceDurationShared.value);
       
       if (timeSinceLastInference >= inferenceInterval) {
+        console.log("🔍 [CameraFullScreen] Inference interval:", timeSinceLastInference, inferenceInterval);
         lastLiveInferenceTime.value = now;
         isInferencingShared.value = true;
         inferenceStartedAt.value = now;
@@ -606,27 +665,35 @@ export default function CameraFullScreen() {
 
         if (runYOLOFromFramePlugin) {
           const rawOutput = runYOLOFromFramePlugin.call(frame) as number[] | undefined;
-          if (rawOutput && rawOutput.length > 0) {
-            runInferenceOnJS(
-              rawOutput,
-              frame.width,
-              frame.height,
-              resizedWidth,
-              resizedHeight,
-              padX,
-              padY,
-              scale,
-              true,
-              true
-            );
+          if (Array.isArray(rawOutput)) {
+            if (rawOutput.length > 0) {
+              pluginSuccessCountShared.value += 1;
+              runInferenceOnJS(
+                rawOutput,
+                frame.width,
+                frame.height,
+                resizedWidth,
+                resizedHeight,
+                padX,
+                padY,
+                scale,
+                true,
+                true
+              );
+              return;
+            }
+            // Empty array from native path means "no detections", not plugin failure.
+            pluginEmptyCountShared.value += 1;
+            publishNoDetectionsOnJS(frame.width, frame.height);
+            isInferencingShared.value = false;
+            inferenceStartedAt.value = 0;
             return;
           }
-          // Plugin returned empty: still publish a no-detection frame so control loop can enter search mode.
-          publishNoDetectionsOnJS(frame.width, frame.height);
-          // Avoid expensive fallback in live mode when plugin is present but returns empty.
-          isInferencingShared.value = false;
-          inferenceStartedAt.value = 0;
-          return;
+          // Null/undefined means plugin failed to produce output.
+          fallbackCountShared.value += 1;
+          // Fall through to resize + bridge inference path.
+        } else {
+          fallbackCountShared.value += 1;
         }
 
         const rgbData = resizePlugin.resize(frame, {
@@ -658,7 +725,7 @@ export default function CameraFullScreen() {
         );
       }
     }
-  }, [runInferenceOnJS, runYOLOFromFramePlugin]);
+  }, [runInferenceOnJS, runYOLOFromFramePlugin, reportInferencePathStatsOnJS, publishNoDetectionsOnJS]);
 
   const handleExportPidCsv = async () => {
     try {

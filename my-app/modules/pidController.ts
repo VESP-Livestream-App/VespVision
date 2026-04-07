@@ -10,7 +10,7 @@ export interface PIDConfig {
   ki?: number;  // Integral gain (default: 0.0)
   kd?: number;  // Derivative gain (default: 0.0)
   integralLimit?: number;  // Anti-windup limit for integral term (default: 100.0)
-  derivativeBufferSize?: number;  // Number of samples for derivative smoothing (default: 3, 1 = no smoothing)
+  derivativeBufferSize?: number;  // Number of samples for derivative smoothing (default: 3)
   /**
    * Input low-pass filter alpha.
    * Range: 0.0-1.0, default: 0.3
@@ -24,7 +24,7 @@ export interface PIDConfig {
 }
 
 export class PIDController {
-  private static readonly STALE_THRESHOLD_MS = 200;
+  private static readonly STALE_THRESHOLD_MS = 500;
 
   private readonly kp: number;
   private readonly ki: number;
@@ -48,9 +48,9 @@ export class PIDController {
     this.kd = config.kd ?? 0.0;
     this.integralLimit = config.integralLimit ?? 100.0;
     this.derivativeBufferSize = config.derivativeBufferSize ?? 3;
-    const alpha = config.inputFilterAlpha ?? 0.3;
+    const alpha = config.inputFilterAlpha ?? 0.25;
     this.inputFilterAlpha = Math.max(0, Math.min(1, alpha));
-    this.outputDeadband = config.outputDeadband ?? 2.0;
+    this.outputDeadband = config.outputDeadband ?? 4.0;
   }
 
   /**
@@ -112,9 +112,10 @@ export class PIDController {
     // Derivative term (rate of change of error)
     // Use buffered approach to smooth noisy camera detections
     let derivative = 0;
+    const derivativeWindowSize = Math.max(2, this.derivativeBufferSize);
     
     // Add current error to circular buffer
-    if (this.errorBuffer.length < this.derivativeBufferSize) {
+    if (this.errorBuffer.length < derivativeWindowSize) {
       // Buffer not full yet - just append
       this.errorBuffer.push(clampedError);
       this.timeBuffer.push(now);
@@ -122,7 +123,7 @@ export class PIDController {
       // Buffer full - replace oldest entry (circular)
       this.errorBuffer[this.bufferIndex] = clampedError;
       this.timeBuffer[this.bufferIndex] = now;
-      this.bufferIndex = (this.bufferIndex + 1) % this.derivativeBufferSize;
+      this.bufferIndex = (this.bufferIndex + 1) % derivativeWindowSize;
     }
     
     // Calculate derivative using oldest vs newest sample (smoothed over buffer window)
@@ -131,7 +132,7 @@ export class PIDController {
       const newestTime = now;
       
       // Get oldest sample from buffer
-      const oldestIndex = this.errorBuffer.length < this.derivativeBufferSize 
+      const oldestIndex = this.errorBuffer.length < derivativeWindowSize 
         ? 0  // Buffer not full, use first element
         : this.bufferIndex;  // Buffer full, oldest is at bufferIndex
       
