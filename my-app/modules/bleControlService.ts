@@ -23,7 +23,7 @@ export class BLEControlService {
   private sendCommandCallback: SendCommandCallback | null = null;
   private connectedDeviceId: string | null = null;
   private lastCommandTime: number = 0;
-  private readonly minCommandInterval: number = 100; // Minimum ms between commands
+  private readonly minCommandInterval: number = 50; // Minimum ms between commands
 
   /**
    * Initialize the service with BLE send callback

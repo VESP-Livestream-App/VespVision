@@ -51,6 +51,13 @@ export class Servo {
   }
 
   /**
+   * Clamp a position to the servo's legal range.
+   */
+  clamp(position: number): number {
+    return Math.max(this.minPos, Math.min(this.maxPos, position));
+  }
+
+  /**
    * Move servo to a specific position
    * @param position - Target position in degrees (0-180)
    */
@@ -58,9 +65,17 @@ export class Servo {
     this.searching = false;
     
     // Clamp value to valid range
-    const clamped = Math.max(this.minPos, Math.min(this.maxPos, position));
+    const clamped = this.clamp(position);
     
     this._targetPos = clamped;
+  }
+
+  /**
+   * Set a search-mode target while keeping search mode enabled.
+   */
+  setSearchTarget(position: number): void {
+    this.searching = true;
+    this._targetPos = this.clamp(position);
   }
 
   /**

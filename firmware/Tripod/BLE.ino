@@ -6,10 +6,18 @@
 #define CURRENT_POS_UUID "d69abf56-23cb-4101-a496-f7f0869130ef"
 
 BLEService nanoService(SERVICE_UUID);
-BLECharacteristic servoCommand(SERVO_COMMAND_UUID, BLERead | BLEWrite | BLENotify, sizeof(moveCmd_u));
-BLECharacteristic currentPos(CURRENT_POS_UUID, BLERead | BLEWrite | BLENotify, sizeof(int));
+BLECharacteristic servoCommand(SERVO_COMMAND_UUID, BLEWriteWithoutResponse, sizeof(moveCmd_u));
+BLECharacteristic currentPos(CURRENT_POS_UUID, BLERead | BLENotify, sizeof(int32_t));
 
 extern moveCmd_u moveCmd;
+volatile bool newCmdReady = false;
+
+void onServoCommand(BLEDevice central, BLECharacteristic characteristic) {
+  if (servoCommand.valueLength() == sizeof(moveCmd_u)) {
+    servoCommand.readValue(moveCmd.bytes, sizeof(moveCmd_u));
+    newCmdReady = true;
+  }
+}
 
 void bleSetup()
 {
@@ -23,25 +31,11 @@ void bleSetup()
 
   nanoService.addCharacteristic(servoCommand);
   nanoService.addCharacteristic(currentPos);
+  servoCommand.setEventHandler(BLEWritten, onServoCommand);
   BLE.addService(nanoService);
 
   BLE.advertise();
   Serial.println("BLE device active & advertising...");
-}
-
-bool checkNewCmd()
-{
-  if (servoCommand.written()) 
-  {
-    servoCommand.readValue(moveCmd.bytes, sizeof(moveCmd));
-
-    Serial.print("Received angle: ");
-    Serial.print(moveCmd.cmd.angle);
-    Serial.print(" time: ");
-    Serial.println(moveCmd.cmd.time);
-    return true;
-  }
-  return false;
 }
 
 void servoAngleBroadcast(int32_t angle)

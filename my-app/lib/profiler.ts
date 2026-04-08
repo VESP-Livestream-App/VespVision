@@ -29,29 +29,28 @@ const updateStat = (label: string, durationMs: number) => {
 };
 
 export const printStats = () => {
-    const table = Object.entries(stats).map(([label, s]) => ({
-        Function: label,
-        Count: s.count,
-        'Avg(ms)': (s.totalMs / s.count).toFixed(2),
-        'Total(ms)': s.totalMs.toFixed(0),
-        'Max(ms)': s.maxMs.toFixed(2),
-    }));
-    
-    if (table.length > 0) {
-        console.log('\n📊 === PERFORMANCE REPORT ===');
-        // Simple manual table printing because console.table can be weird in some terminals
-        console.log('| Function                | Count | Avg(ms) | Max(ms) | Total(s) |');
-        console.log('|-------------------------|-------|---------|---------|----------|');
-        table.forEach(row => {
-            const name = row.Function.padEnd(23).slice(0, 23);
-            const count = String(row.Count).padEnd(5);
-            const avg = String(row['Avg(ms)']).padEnd(7);
-            const max = String(row['Max(ms)']).padEnd(7);
-            const total = (parseFloat(row['Total(ms)'])/1000).toFixed(2).padEnd(8);
-            console.log(`| ${name} | ${count} | ${avg} | ${max} | ${total} |`);
-        });
-        console.log('=============================\n');
-    }
+    // const table = Object.entries(stats).map(([label, s]) => ({
+    //     Function: label,
+    //     Count: s.count,
+    //     'Avg(ms)': (s.totalMs / s.count).toFixed(2),
+    //     'Total(ms)': s.totalMs.toFixed(0),
+    //     'Max(ms)': s.maxMs.toFixed(2),
+    // }));
+    // if (table.length > 0) {
+    //     console.log('\n📊 === PERFORMANCE REPORT ===');
+    //     console.log('| Function                | Count | Avg(ms) | Max(ms) | Total(s) |');
+    //     console.log('|-------------------------|-------|---------|---------|----------|');
+    //     table.forEach(row => {
+    //         const name = row.Function.padEnd(23).slice(0, 23);
+    //         const count = String(row.Count).padEnd(5);
+    //         const avg = String(row['Avg(ms)']).padEnd(7);
+    //         const max = String(row['Max(ms)']).padEnd(7);
+    //         const total = (parseFloat(row['Total(ms)']) / 1000).toFixed(2).padEnd(8);
+    //         console.log(`| ${name} | ${count} | ${avg} | ${max} | ${total} |`);
+    //     });
+    //     console.log('=============================\n');
+    // }
+    return;
 };
 
 // Auto-start printer

@@ -8,16 +8,24 @@
  */
 
 import { Servo } from './servoController';
-import { SimpleController } from './simpleController';
+import { PIDController } from './pidController';
 import type { Detection } from './yoloUtils';
 
 export interface ControlLoopConfig {
   fieldOfView?: number;        // Camera field of view in degrees (default: 70)
-  servoSpeed?: number;          // Servo speed in degrees/second (default: 40)
-  controllerGain?: number;      // Controller gain factor (default: 25.0)
+  servoSpeed?: number;          // Servo speed in degrees/second (default: 60)
+  kp?: number;                  // Proportional gain (default: 25.0)
+  ki?: number;                  // Integral gain (default: 0.1)
+  kd?: number;                  // Derivative gain (default: 5.0)
+  derivativeBufferSize?: number; // Samples for derivative smoothing (default: 3)
   frameWidth?: number;          // Camera frame width in pixels (default: 640)
   planeDegrees?: number;        // Total plane range in degrees (default: 180)
   edgeViewRedundancyFactor?: number; // Edge buffer factor (default: 0.25)
+  searchModeDelayMs?: number;   // Delay before entering search mode when target is lost
+  missesBeforeSearch?: number;  // Consecutive empty detections required before search mode
+  searchStepDegrees?: number;   // Search sweep step in degrees
+  searchArrivalThresholdDegrees?: number; // How close to target before issuing next search step
+  minDetectionWidthPx?: number; // Reject tiny detections below this width
 }
 
 export interface ControlLoopState {
@@ -27,16 +35,22 @@ export interface ControlLoopState {
   normalizedError: number | null; // Last normalized error [-1, 1]
   controlSignal: number | null;  // Last control signal
   targetAngle: number | null;    // Current target angle for servo
+  lastDetectedBallAngle: number | null; // Ball angle at the latest detection
 }
 
 export class ControlLoop {
-  private readonly fieldOfView: number;
+  private fieldOfView: number;
   private readonly frameWidth: number;
   private readonly planeDegrees: number;
   private readonly edgeRedundancyFactor: number;
+  private readonly searchModeDelayMs: number;
+  private readonly missesBeforeSearch: number;
+  private readonly searchStepDegrees: number;
+  private readonly searchArrivalThresholdDegrees: number;
+  private readonly minDetectionWidthPx: number;
   
   private readonly servo: Servo;
-  private readonly controller: SimpleController;
+  private readonly controller: PIDController;
   
   private state: ControlLoopState = {
     isTracking: true,
@@ -45,25 +59,48 @@ export class ControlLoop {
     normalizedError: null,
     controlSignal: null,
     targetAngle: null,
+    lastDetectedBallAngle: null,
   };
 
   private lastControlTime: number = 0;
-  private intervalMs: number;
+  private targetLostAt: number | null = null;
+  private consecutiveMisses: number = 0;
+  private searchDirection: 1 | -1 = 1;
+  private lastValidRadial: {
+    r: number;
+    worldAngleDeg: number;
+    targetFovAngleDeg: number;
+    servoPosDeg: number;
+    tsMs: number;
+  } | null = null;
 
   constructor(config: ControlLoopConfig = {}) {
     const {
-      fieldOfView = 70,
+      fieldOfView = 70, // Updated later if we receive data from the phone.
       servoSpeed = 40.0,
-      controllerGain = 25.0,
+      kp = 0.35 * fieldOfView,
+      ki = 0.03 * fieldOfView,
+      kd = 0.05 * fieldOfView,
+      derivativeBufferSize = 1,
       frameWidth = 640,
       planeDegrees = 180,
       edgeViewRedundancyFactor = 0.25,
+      searchModeDelayMs = 1500,
+      missesBeforeSearch = 15,
+      searchStepDegrees = Math.max(8, Math.min(25, fieldOfView * 0.35)),
+      searchArrivalThresholdDegrees = 4,
+      minDetectionWidthPx = 24,
     } = config;
 
     this.fieldOfView = fieldOfView;
     this.frameWidth = frameWidth;
     this.planeDegrees = planeDegrees;
     this.edgeRedundancyFactor = edgeViewRedundancyFactor;
+    this.searchModeDelayMs = searchModeDelayMs;
+    this.missesBeforeSearch = Math.max(1, Math.floor(missesBeforeSearch));
+    this.searchStepDegrees = Math.max(1, searchStepDegrees);
+    this.searchArrivalThresholdDegrees = Math.max(0.5, searchArrivalThresholdDegrees);
+    this.minDetectionWidthPx = Math.max(1, minDetectionWidthPx);
     
     
     this.servo = new Servo({
@@ -73,7 +110,7 @@ export class ControlLoop {
       maxPos: planeDegrees,
     });
     
-    this.controller = new SimpleController({ gain: controllerGain });
+    this.controller = new PIDController({ kp, ki, kd, derivativeBufferSize });
   }
 
   /**
@@ -85,16 +122,17 @@ export class ControlLoop {
 
   /**
    * Convert pixel position to angle in degrees
-   * Maps frame pixels (0 to frameWidth) to plane degrees (0 to planeDegrees)
+   * Maps frame pixels (0 to frameWidth) to plane degrees (0 to fieldOfView)
    * 
    * @param pixelX - X position in pixels (center of detection)
    * @returns Angle in degrees
    */
-  pixelToAngle(pixelX: number): number {
+  pixelToAngle(pixelX: number, frameWidth: number = this.frameWidth): number {
     // Map pixel position to angle
     // pixelX = 0 -> angle = 0
     // pixelX = frameWidth -> angle = planeDegrees
-    const normalized = pixelX / this.frameWidth;
+    const safeFrameWidth = frameWidth > 0 ? frameWidth : this.frameWidth;
+    const normalized = pixelX / safeFrameWidth;
     return normalized * this.fieldOfView;
   }
 
@@ -124,90 +162,111 @@ export class ControlLoop {
   update(
     detections: Detection[],
     currentServoPos: number,
-    frameWidth?: number
+    frameWidth?: number,
+    fieldOfView?: number
   ): { angle: number; timeMs: number } | null {
     const now = Date.now();
-    const elapsed = now - this.lastControlTime;
-    
     this.lastControlTime = now;
-    console.log(`\n🔄 [Control] Update cycle (${elapsed.toFixed(0)}ms since last)`);
     
     // Use provided frameWidth or fall back to config
     const effectiveFrameWidth = frameWidth ?? this.frameWidth;
+    if (typeof fieldOfView === 'number' && Number.isFinite(fieldOfView) && fieldOfView > 0) {
+      this.fieldOfView = fieldOfView;
+    }
     
-    // Find sports ball detection (support multiple ball types)
-    const BALL_LABELS = ['sports ball', 'basketball', 'soccer ball', 'tennis ball'];
-    const ballDetection = detections.find(
-      (det) => {
-        const label = String(det.className ?? det.class).toLowerCase();
-        // Use det.score if present, otherwise assume 1.0 (for backward compatibility)
-        const score = (det as any)?.score ?? 1.0;
-        return BALL_LABELS.includes(label) && score >= 0.5;
-      }
+    const ballCandidate = this.selectBestBallCandidate(
+      detections,
+      currentServoPos,
+      effectiveFrameWidth,
+      now
     );
-    
-    // If no ball detected, enter search mode
+    const ballDetection = ballCandidate?.det ?? null;
     if (!ballDetection) {
+      this.consecutiveMisses += 1;
+      // Clear PID history while target is missing so stale integral/derivative
+      // values do not cause jumps when detections resume.
+      this.controller.reset();
+      this.state.lastDetectedBallAngle = null;
+      this.state.controlSignal = null;
+      this.state.normalizedError = null;
       // Update servo search mode if needed - only when actually searching
       if (this.servo.isSearching) {
-        const updated = this.servo.updateSearch(currentServoPos, this.fieldOfView, this.edgeRedundancyFactor);
-        if (updated) {
-          this.state.targetAngle = this.servo.targetPos;
-          const timeMs = this.servo.getTimeToTarget(currentServoPos);
-          console.log('🔍 [Control] Searching...');
-          console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
-          console.log(`   Target angle: ${this.servo.targetPos.toFixed(2)}°`);
-          console.log(`   Time to move: ${timeMs}ms`);
-          return { angle: this.servo.targetPos, timeMs };
+        const distanceToCurrentTarget = Math.abs(currentServoPos - this.servo.targetPos);
+        if (distanceToCurrentTarget > this.searchArrivalThresholdDegrees) {
+          return null;
         }
+
+        let nextTarget = currentServoPos + this.searchDirection * this.searchStepDegrees;
+        if (nextTarget <= 0 || nextTarget >= this.planeDegrees) {
+          this.searchDirection = (this.searchDirection === 1 ? -1 : 1);
+          nextTarget = currentServoPos + this.searchDirection * this.searchStepDegrees;
+        }
+        const clampedTarget = Math.max(0, Math.min(this.planeDegrees, nextTarget));
+        this.servo.setSearchTarget(clampedTarget);
+        this.state.targetAngle = this.servo.targetPos;
+        const timeMs = this.servo.getTimeToTarget(currentServoPos);
+        return { angle: this.servo.targetPos, timeMs };
       }
       
       else if (this.state.isTracking) {
-        // Just lost target - enter search mode
-        console.log('🎯 [Control] Target lost - entering search mode');
-        console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
+        // Just lost target - wait before entering search mode
+        if (this.targetLostAt === null) {
+          this.targetLostAt = now;
+        }
+        if (this.consecutiveMisses < this.missesBeforeSearch) {
+          return null;
+        }
+        const lostForMs = now - this.targetLostAt;
+        if (lostForMs < this.searchModeDelayMs) {
+          return null;
+        }
+
         this.state.isTracking = false;
         this.state.isSearching = true;
+        this.lastValidRadial = null;
         
         // Determine search direction based on last error
-        const searchDirection = (this.state.lastError ?? 0) < 0 ? 1 : -1;
-        this.servo.searchTarget(searchDirection, this.fieldOfView, this.edgeRedundancyFactor);
+        this.searchDirection = (this.state.lastError ?? 0) < 0 ? 1 : -1;
+        let nextTarget = currentServoPos + this.searchDirection * this.searchStepDegrees;
+        if (nextTarget <= 0 || nextTarget >= this.planeDegrees) {
+          this.searchDirection = (this.searchDirection === 1 ? -1 : 1);
+          nextTarget = currentServoPos + this.searchDirection * this.searchStepDegrees;
+        }
+        this.servo.setSearchTarget(Math.max(0, Math.min(this.planeDegrees, nextTarget)));
         
         this.state.targetAngle = this.servo.targetPos;
         const timeMs = this.servo.getTimeToTarget(currentServoPos);
-        
-        console.log(`   Search direction: ${searchDirection > 0 ? 'left-to-right' : 'right-to-left'}`);
-        console.log(`   Target angle: ${this.servo.targetPos.toFixed(2)}°`);
-        console.log(`   Time to move: ${timeMs}ms`);
-        
         return { angle: this.servo.targetPos, timeMs };
       }
       return null;
     }
+
+    this.consecutiveMisses = 0;
+    this.targetLostAt = null;
     
     // Ball detected - calculate position
     const ballCenterX = ballDetection.x + ballDetection.width / 2;
-    const fovAngle = this.pixelToAngle(ballCenterX);
-    
-    console.log('⚽ [Control] Ball detected');
-    console.log(`   Ball center X: ${ballCenterX.toFixed(1)}px`);
-    console.log(`   Target angle: ${(currentServoPos - this.fieldOfView / 2 + fovAngle).toFixed(2)}°`);
-    console.log(`   Current servo pos: ${currentServoPos.toFixed(2)}°`);
-    
-    // Check if target is visible
-    const visibleWindow = this.getVisibleWindow(currentServoPos);
-    console.log(`   Visible window: [${visibleWindow.min.toFixed(2)}°, ${visibleWindow.max.toFixed(2)}°]`);
+    const fovAngle = this.pixelToAngle(ballCenterX, effectiveFrameWidth);
+    const detectedBallAngle = currentServoPos - this.fieldOfView / 2 + fovAngle;
+    if (ballCandidate) {
+      this.lastValidRadial = {
+        r: ballCandidate.r,
+        worldAngleDeg: ballCandidate.worldAngleDeg,
+        targetFovAngleDeg: ballCandidate.targetFovAngleDeg,
+        servoPosDeg: currentServoPos,
+        tsMs: now,
+      };
+    }
+    this.state.lastDetectedBallAngle = detectedBallAngle;
     
     // Target is visible - track it
     if (this.state.isSearching || !this.state.isTracking) {
       // Just found target - exit search mode
-      console.log('✅ [Control] Target found - exiting search mode');
       this.state.isSearching = false;
       this.state.isTracking = true;
     }
     
     // Calculate error: distance from center of image
-    // Center of image = currentServoPos - this.fieldOfView / 2
     // Target location = fovAngle
     // Error = Target - Center
     const errorDegrees = fovAngle - this.fieldOfView / 2;
@@ -218,7 +277,7 @@ export class ControlLoop {
     this.state.normalizedError = normalizedError;
     
     // Compute control signal
-    const controlSignal = this.controller.computeControl(normalizedError);
+    const controlSignal = this.controller.computeControl(normalizedError, true);
     this.state.controlSignal = controlSignal;
     
     // Calculate new servo target
@@ -237,14 +296,6 @@ export class ControlLoop {
     // Calculate time to move
     const timeMs = this.servo.getTimeToTarget(currentServoPos);
     
-    console.log('📊 [Control] Tracking calculation:');
-    console.log(`   Error: ${errorDegrees.toFixed(2)}°`);
-    console.log(`   Normalized error: ${normalizedError.toFixed(3)}`);
-    console.log(`   Control signal: ${controlSignal.toFixed(2)}`);
-    console.log(`   Displacement: ${displacement.toFixed(2)}°`);
-    console.log(`   New servo target: ${clampedTarget.toFixed(2)}°`);
-    console.log(`   Time to move: ${timeMs}ms`);
-    
     return { angle: clampedTarget, timeMs };
   }
 
@@ -259,8 +310,88 @@ export class ControlLoop {
       normalizedError: null,
       controlSignal: null,
       targetAngle: null,
+      lastDetectedBallAngle: null,
     };
     this.lastControlTime = 0;
+    this.targetLostAt = null;
+    this.consecutiveMisses = 0;
+    this.searchDirection = 1;
+    this.lastValidRadial = null;
+    this.controller.reset();
     this.servo.moveTo(90.0);
+  }
+
+  private selectBestBallCandidate(
+    detections: Detection[],
+    currentServoPos: number,
+    frameWidth: number,
+    nowMs: number
+  ): { det: Detection; r: number; worldAngleDeg: number; targetFovAngleDeg: number } | null {
+    const BALL_LABELS = ['basketball'];
+    const candidates = detections
+      .filter((det) => BALL_LABELS.includes(String(det.className ?? det.class).toLowerCase()))
+      .map((det) => {
+        if (det.width < this.minDetectionWidthPx) {
+          return null;
+        }
+        const confidence = Number.isFinite(det.confidence) ? det.confidence : 0;
+        const passesConfidenceCutoff = confidence >= 0.35;
+        const ballCenterX = det.x + det.width / 2;
+        const fovAngle = this.pixelToAngle(ballCenterX, frameWidth);
+        const worldAngleDeg = currentServoPos - this.fieldOfView / 2 + fovAngle;
+
+        // Relative depth proxy: width ratio and tan(FOV/2).
+        const safeWidthNorm = Math.max(det.width / Math.max(1, frameWidth), 1e-3);
+        const tanHalfFov = Math.max(1e-3, Math.tan((this.fieldOfView * Math.PI) / 360));
+        const r = 1 / (safeWidthNorm * tanHalfFov);
+
+        const confidenceScore = Math.max(0, Math.min(1, (confidence - 0.2) / 0.8));
+        let motionScore = 0.5;
+        let speed = 0;
+        if (this.lastValidRadial) {
+          const dtSec = Math.max((nowMs - this.lastValidRadial.tsMs) / 1000, 1e-3);
+          const prevWorldAngleDeg =
+            this.lastValidRadial.servoPosDeg -
+            this.fieldOfView / 2 +
+            this.lastValidRadial.targetFovAngleDeg;
+          const deltaAngleDegAbs = Math.abs(worldAngleDeg - prevWorldAngleDeg);
+          const deltaAngleRad = (deltaAngleDegAbs * Math.PI) / 180;
+          const dist = Math.sqrt(
+            Math.max(
+              0,
+              this.lastValidRadial.r * this.lastValidRadial.r +
+                r * r -
+                2 * this.lastValidRadial.r * r * Math.cos(deltaAngleRad)
+            )
+          );
+          speed = dist / dtSec;
+          // Penalize implausibly fast jumps in radial space.
+          const speedScale = 7;
+          motionScore = 1 / (1 + (speed / speedScale) * (speed / speedScale));
+        }
+
+        const totalScore = 0.6 * confidenceScore + 0.4 * motionScore;
+        if (!passesConfidenceCutoff) {
+          return null;
+        }
+        return { det, r, worldAngleDeg, targetFovAngleDeg: fovAngle, totalScore };
+      })
+      .filter((item): item is { det: Detection; r: number; worldAngleDeg: number; targetFovAngleDeg: number; totalScore: number } => item !== null)
+      .sort((a, b) => b.totalScore - a.totalScore);
+
+    if (candidates.length === 0) {
+      return null;
+    }
+    const best = candidates[0];
+    const threshold = this.lastValidRadial ? 0.60 : 0.42;
+    if (best.totalScore < threshold) {
+      return null;
+    }
+    return {
+      det: best.det,
+      r: best.r,
+      worldAngleDeg: best.worldAngleDeg,
+      targetFovAngleDeg: best.targetFovAngleDeg,
+    };
   }
 }
