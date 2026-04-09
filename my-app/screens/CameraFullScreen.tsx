@@ -8,6 +8,7 @@ import { getTurnSignalForBLE } from '@/modules/bleTurnSignal';
 import { ControlLoop } from '@/modules/controlLoop';
 import { getPidTelemetryCsvPath, preparePidTelemetryCsvForExport } from '@/modules/pidTelemetry';
 import { addSnapshot } from '@/modules/snapshotStore';
+import { getConnectionStatus, startStreaming, stopStreaming } from '@/modules/StreamingModule';
 import { normalizeOutputLayout, runYoloInference } from '@/modules/yoloInference';
 import { closeYoloModel, loadYoloModel } from '@/modules/yoloModel';
 import type { Detection } from '@/modules/yoloUtils';
@@ -33,7 +34,8 @@ import { createResizePlugin } from 'vision-camera-resize-plugin';
 const CONTROL_FIELD_OF_VIEW = 70;
 const BALL_LABELS = ['sports ball', 'basketball', 'soccer ball', 'tennis ball'];
 const MIN_DETECTION_CONFIDENCE = 0.7;
-const STREAM_INFERENCE_LOG_INTERVAL_MS = 2000;
+// Update to your Mac IP when testing RTMP locally.
+const RTMP_STREAM_URL = 'rtmp://128.189.134.18:1935/live/stream';
 
 const getDetectedBallAngleFromDetections = (
   allDetections: Detection[],
@@ -114,6 +116,7 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
   const [fps, setFps] = useState(0);
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('landscape');
   const [isLiveInference, setIsLiveInference] = useState(isStreamMode);
+  const [isStreaming, setIsStreaming] = useState(false);
   const minBound = useMemo(() => {
     const parsed = Number(params.minBound);
     return Number.isFinite(parsed) ? Math.max(0, Math.min(180, parsed)) : 0;
@@ -136,6 +139,8 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
   const fpsLastTimestamp = useSharedValue(0);
   const isModelLoadedShared = useSharedValue(false);
   const isLiveInferenceShared = useSharedValue(false);
+  const isStreamingShared = useSharedValue(false);
+  const streamFrameCount = useSharedValue(0);
   const lastLiveInferenceTime = useSharedValue(0);
   const isInferencingShared = useSharedValue(false);
   const isInferenceRunningJSShared = useSharedValue(false);
@@ -153,6 +158,8 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
     if (isStreamMode) {
       // Enforce always-on live inference in production streaming mode.
       setIsLiveInference(true);
+      // Enforce streaming transport ON in production streaming mode.
+      setIsStreaming(true);
     }
   }, [isStreamMode]);
 
@@ -162,6 +169,41 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
       lastLiveInferenceTime.value = 0;
     }
   }, [isLiveInference]);
+
+  useEffect(() => {
+    isStreamingShared.value = isStreaming;
+    if (isStreaming) {
+      if (getConnectionStatus() === 'unavailable') {
+        Alert.alert(
+          'Streaming unavailable',
+          'Native streaming module is not loaded in this app build. Rebuild with `npx expo run:ios` and try again.'
+        );
+        setIsStreaming(false);
+        return;
+      }
+      if (!enqueueStreamFramePlugin) {
+        Alert.alert(
+          'Streaming plugin missing',
+          'enqueueStreamFrame plugin is not loaded. Rebuild iOS app so the frame processor plugin is included.'
+        );
+        setIsStreaming(false);
+        return;
+      }
+      startStreaming(RTMP_STREAM_URL).catch((e) => {
+        console.warn('StreamingModule.startStreaming:', e);
+        setIsStreaming(false);
+      });
+    } else {
+      streamFrameCount.value = 0;
+      stopStreaming().catch((e) => console.warn('StreamingModule.stopStreaming:', e));
+    }
+  }, [isStreaming]);
+
+  useEffect(() => {
+    return () => {
+      stopStreaming().catch((e) => console.warn('StreamingModule.stopStreaming on unmount:', e));
+    };
+  }, []);
 
   // BLE integration for control loop
   const {
@@ -174,7 +216,7 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
   const controlLoopRef = useRef<ControlLoop | null>(null);
   const bleServiceRef = useRef(getBLEControlService());
   const lastSentServoCommandAngleRef = useRef<number | null>(null);
-  const lastStreamInferenceLogAtRef = useRef(0);
+  const lastInferenceCallAtRef = useRef(0);
 
   useEffect(() => {
     if (!hasPermission) {
@@ -217,7 +259,7 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
 
   useEffect(() => {
     const id = setInterval(() => {
-      console.log(`📷 [CameraFullScreen] ${new Date().toISOString()} FPS=${fps}`);
+      // console.log(`📷 [CameraFullScreen] ${new Date().toISOString()} FPS=${fps}`);
     }, 10000);
     return () => clearInterval(id);
   }, [fps]);
@@ -443,15 +485,15 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
       void error;
     } finally {
       const dt = Date.now() - t0;
-      if (isStreamMode && isLiveMode) {
-        const now = Date.now();
-        if (now - lastStreamInferenceLogAtRef.current >= STREAM_INFERENCE_LOG_INTERVAL_MS) {
-          lastStreamInferenceLogAtRef.current = now;
-          console.log(
-            `📡 [StreamInference] ${new Date(now).toISOString()} detections=${detections.length} duration=${dt}ms`
-          );
-        }
+      const now = Date.now();
+      if (lastInferenceCallAtRef.current > 0) {
+        const deltaMs = now - lastInferenceCallAtRef.current;
+        // console.log(
+        //   `🧠 [InferenceInterval] ${new Date(now).toISOString()} delta_ms=${deltaMs} duration_ms=${dt}`
+        // );
+        void deltaMs;
       }
+      lastInferenceCallAtRef.current = now;
       // Keep true runtime (no upper cap) so pacing reflects actual inference cost.
       lastInferenceDurationShared.value = Math.max(20, dt);
       if (!isLiveMode) {
@@ -501,6 +543,10 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
     () => VisionCameraProxy.initFrameProcessorPlugin('runYOLOFromFrame', {}),
     []
   );
+  const enqueueStreamFramePlugin = useMemo(
+    () => VisionCameraProxy.initFrameProcessorPlugin('enqueueStreamFrame', {}),
+    []
+  );
 
   useEffect(() => {
     // if (runYOLOFromFramePlugin) {
@@ -510,6 +556,10 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
     // }
     void runYOLOFromFramePlugin;
   }, [runYOLOFromFramePlugin]);
+
+  useEffect(() => {
+    void enqueueStreamFramePlugin;
+  }, [enqueueStreamFramePlugin]);
 
   const padToSquare = (
     rgbData: number[],
@@ -633,6 +683,14 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
       fpsLastTimestamp.value = now;
       updateFpsOnJS(nextFps);
     }
+
+    // Streaming path: enqueue full-res frames at ~15fps.
+    if (isStreamingShared.value && enqueueStreamFramePlugin) {
+      streamFrameCount.value += 1;
+      if (streamFrameCount.value % 2 === 0) {
+        enqueueStreamFramePlugin.call(frame);
+      }
+    }
     
     if (!isModelLoadedShared.value) {
       return;
@@ -723,7 +781,7 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
       const inferenceInterval = Math.max(100, lastInferenceDurationShared.value);
       
       if (timeSinceLastInference >= inferenceInterval) {
-        // console.log("🔍 [CameraFullScreen] Inference interval:", timeSinceLastInference, inferenceInterval);
+        console.log("🔍 [CameraFullScreen] Inference interval:", timeSinceLastInference, inferenceInterval);
         lastLiveInferenceTime.value = now;
         isInferencingShared.value = true;
         inferenceStartedAt.value = now;
@@ -797,7 +855,7 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
         );
       }
     }
-  }, [runInferenceOnJS, runYOLOFromFramePlugin, reportInferencePathStatsOnJS, publishNoDetectionsOnJS]);
+  }, [runInferenceOnJS, runYOLOFromFramePlugin, enqueueStreamFramePlugin, reportInferencePathStatsOnJS, publishNoDetectionsOnJS]);
 
   const handleExportPidCsv = async () => {
     try {
@@ -933,6 +991,15 @@ export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProp
             thumbColor={isLiveInference ? '#f5dd4b' : '#f4f3f4'}
           />
         </View>
+        <Pressable
+          style={[styles.button, isStreaming && styles.streamButtonActive]}
+          onPress={() => setIsStreaming((prev) => !prev)}
+          pointerEvents="auto"
+        >
+          <ThemedText style={styles.buttonText}>
+            {isStreaming ? 'Stop Stream' : 'Start Stream'}
+          </ThemedText>
+        </Pressable>
         <Pressable
           style={styles.button}
           onPress={() => {
@@ -1086,6 +1153,9 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     paddingHorizontal: 12,
     borderRadius: 8,
+  },
+  streamButtonActive: {
+    backgroundColor: 'rgba(16, 185, 129, 0.8)',
   },
   buttonText: {
     color: 'white',

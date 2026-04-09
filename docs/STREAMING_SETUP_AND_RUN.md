@@ -14,8 +14,9 @@ The VespVision app streams live camera video from an iOS device to an RTMP serve
 
 The app streams to `rtmp://<MAC_IP>:1935/live/stream`. Set your Mac's IP in:
 
-- **File**: `my-app/screens/CameraFullScreen.tsx` (around line 360, in the Stream Capture toggle handler)
-- **Change**: `rtmp://192.168.50.133:1935/live/stream` → `rtmp://<YOUR_MAC_IP>:1935/live/stream`
+- **File**: `my-app/screens/CameraFullScreen.tsx` (`RTMP_STREAM_URL`)
+- **Current value**: `rtmp://128.189.134.18:1935/live/stream`
+- **Change as needed**: `rtmp://<YOUR_MAC_IP>:1935/live/stream`
 
 To find your Mac's IP: `ipconfig getifaddr en0` (or your Wi‑Fi interface).
 
@@ -23,26 +24,35 @@ To find your Mac's IP: `ipconfig getifaddr en0` (or your Wi‑Fi interface).
 
 ## How to Run
 
-### Step 1: Start the RTMP receiver on the Mac
+### Step 1: Start the RTMP receiver on the Mac (low latency)
 
 Open a terminal and run:
 
 ```bash
-ffmpeg -listen 1 -i rtmp://0.0.0.0:1935/live/stream -c copy -f nut - 2>/dev/null | ffplay -
+ffmpeg -fflags nobuffer -flags low_delay -analyzeduration 0 -probesize 32 -listen 1 -i rtmp://0.0.0.0:1935/live/stream -c copy -f nut - | ffplay -fflags nobuffer -flags low_delay -framedrop -sync video -
 ```
 
 This makes ffmpeg listen on port 1935 and displays the stream in an ffplay window. **Leave this running.**
 
+If you frequently stop/restart stream in app, use an auto-restart loop:
+
+```bash
+while true; do
+  ffmpeg -fflags nobuffer -flags low_delay -analyzeduration 0 -probesize 32 -listen 1 -i rtmp://0.0.0.0:1935/live/stream -c copy -f nut - | ffplay -fflags nobuffer -flags low_delay -framedrop -sync video -
+  sleep 1
+done
+```
+
 ### Step 2: Start the app and stream
 
 1. Run the app: `cd my-app && npx expo run:ios`
-2. Open the camera screen
-3. Turn **Stream Capture** ON
+2. Open the **Camera Full** test screen
+3. Tap **Start Stream**
 4. The ffplay window on the Mac should show the live stream
 
 ### Step 3: Stop
 
-- Turn Stream Capture OFF in the app
+- Tap **Stop Stream** in the app
 - Press `q` in the ffplay window, or Ctrl+C in the terminal
 
 ---
@@ -84,6 +94,8 @@ iPhone (VespVision)                    Mac
 | "Connection refused" | ffmpeg must be running *before* you turn on Stream Capture. |
 | No stream | Phone and Mac on same network; correct `rtmp://` URL with Mac's IP. |
 | Firewall blocks port 1935 | Allow inbound TCP 1935, or disable firewall for testing. |
+| `status=connected` but `encoded=0` | Streaming plugin path likely not in native build. Run `npx expo prebuild --platform ios --clean` then `npx expo run:ios`. |
+| Toggle turns on but nothing appears | Check app logs for `📹 [Stream] status=... encoded=...` and `📹 [Stream] enqueue_attempts=...`. |
 
 ---
 
