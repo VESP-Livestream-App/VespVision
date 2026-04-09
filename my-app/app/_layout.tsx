@@ -25,6 +25,22 @@ export default function RootLayout() {
             headerShown: false,
           }}
         />
+        <Stack.Screen
+          name="camera-stream"
+          options={{
+            title: 'Stream Setup',
+            headerBackTitleVisible: false,
+            headerShown: false,
+          }}
+        />
+        <Stack.Screen
+          name="camera-stream-full"
+          options={{
+            title: 'Streaming',
+            headerBackTitleVisible: false,
+            headerShown: false,
+          }}
+        />
         <Stack.Screen name="modal" options={{ presentation: 'modal', title: 'Modal' }} />
       </Stack>
       <StatusBar style="auto" />

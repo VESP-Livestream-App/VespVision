@@ -15,7 +15,7 @@ import { parseYOLOOutput } from '@/modules/yoloUtils';
 import { useFocusEffect } from '@react-navigation/native';
 import * as ImageManipulator from 'expo-image-manipulator';
 import * as Sharing from 'expo-sharing';
-import { useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import * as ScreenOrientation from 'expo-screen-orientation';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, AppState, Pressable, StyleSheet, Switch, View } from 'react-native';
@@ -33,6 +33,7 @@ import { createResizePlugin } from 'vision-camera-resize-plugin';
 const CONTROL_FIELD_OF_VIEW = 70;
 const BALL_LABELS = ['sports ball', 'basketball', 'soccer ball', 'tennis ball'];
 const MIN_DETECTION_CONFIDENCE = 0.7;
+const STREAM_INFERENCE_LOG_INTERVAL_MS = 2000;
 
 const getDetectedBallAngleFromDetections = (
   allDetections: Detection[],
@@ -78,9 +79,15 @@ const decodeJpegToRgb = (base64Jpeg: string): Uint8Array => {
   return rgb;
 };
 
-export default function CameraFullScreen() {
+type CameraFullScreenProps = {
+  mode?: 'test' | 'stream';
+};
+
+export default function CameraFullScreen({ mode = 'test' }: CameraFullScreenProps) {
+  const isStreamMode = mode === 'stream';
   const { hasPermission, requestPermission } = useCameraPermission();
   const router = useRouter();
+  const params = useLocalSearchParams<{ minBound?: string; maxBound?: string }>();
   const cameraRef = useRef<Camera>(null);
   const device = useCameraDevice('back');
   const deviceFieldOfView = device?.formats?.[0]?.fieldOfView ?? CONTROL_FIELD_OF_VIEW;
@@ -106,7 +113,23 @@ export default function CameraFullScreen() {
   const [ballSide, setBallSide] = useState<BallSide>(null);
   const [fps, setFps] = useState(0);
   const [orientation, setOrientation] = useState<'portrait' | 'landscape'>('landscape');
-  const [isLiveInference, setIsLiveInference] = useState(false);
+  const [isLiveInference, setIsLiveInference] = useState(isStreamMode);
+  const minBound = useMemo(() => {
+    const parsed = Number(params.minBound);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(180, parsed)) : 0;
+  }, [params.minBound]);
+  const maxBound = useMemo(() => {
+    const parsed = Number(params.maxBound);
+    return Number.isFinite(parsed) ? Math.max(0, Math.min(180, parsed)) : 180;
+  }, [params.maxBound]);
+  const servoRange = useMemo(() => {
+    const low = Math.min(minBound, maxBound);
+    const high = Math.max(minBound, maxBound);
+    if (high - low < 1) {
+      return { min: 0, max: 180 };
+    }
+    return { min: low, max: high };
+  }, [minBound, maxBound]);
   const singleShotRequestId = useSharedValue(0);
   const lastProcessedRequestId = useSharedValue(0);
   const fpsFrameCount = useSharedValue(0);
@@ -126,6 +149,20 @@ export default function CameraFullScreen() {
   const fallbackCountShared = useSharedValue(0);
   const inferencePathWindowStartMsShared = useSharedValue(0);
 
+  useEffect(() => {
+    if (isStreamMode) {
+      // Enforce always-on live inference in production streaming mode.
+      setIsLiveInference(true);
+    }
+  }, [isStreamMode]);
+
+  useEffect(() => {
+    isLiveInferenceShared.value = isLiveInference;
+    if (!isLiveInference) {
+      lastLiveInferenceTime.value = 0;
+    }
+  }, [isLiveInference]);
+
   // BLE integration for control loop
   const {
     connectedId,
@@ -137,6 +174,7 @@ export default function CameraFullScreen() {
   const controlLoopRef = useRef<ControlLoop | null>(null);
   const bleServiceRef = useRef(getBLEControlService());
   const lastSentServoCommandAngleRef = useRef<number | null>(null);
+  const lastStreamInferenceLogAtRef = useRef(0);
 
   useEffect(() => {
     if (!hasPermission) {
@@ -235,6 +273,8 @@ export default function CameraFullScreen() {
       kp: 25.0,
       frameWidth: lastFrameSize.width || 640,
       planeDegrees: 180,
+      minServoAngle: servoRange.min,
+      maxServoAngle: servoRange.max,
       edgeViewRedundancyFactor: 0.25,
       searchModeDelayMs: 1500,
     });
@@ -251,7 +291,7 @@ export default function CameraFullScreen() {
       controlLoopRef.current?.reset();
       bleServiceRef.current.reset();
     };
-  }, [sendAngleTime, deviceFieldOfView]);
+  }, [sendAngleTime, deviceFieldOfView, servoRange.min, servoRange.max]);
 
   // Update BLE service when connection changes
   useEffect(() => {
@@ -268,11 +308,13 @@ export default function CameraFullScreen() {
         kp: 25.0,
         frameWidth: lastFrameSize.width,
         planeDegrees: 180,
+        minServoAngle: servoRange.min,
+        maxServoAngle: servoRange.max,
         edgeViewRedundancyFactor: 0.25,
         searchModeDelayMs: 1500,
       });
     }
-  }, [lastFrameSize.width, deviceFieldOfView]);
+  }, [lastFrameSize.width, deviceFieldOfView, servoRange.min, servoRange.max]);
 
   // Send turn signal via BLE when detections change (legacy - can be removed if using control loop)
   useEffect(() => {
@@ -401,6 +443,15 @@ export default function CameraFullScreen() {
       void error;
     } finally {
       const dt = Date.now() - t0;
+      if (isStreamMode && isLiveMode) {
+        const now = Date.now();
+        if (now - lastStreamInferenceLogAtRef.current >= STREAM_INFERENCE_LOG_INTERVAL_MS) {
+          lastStreamInferenceLogAtRef.current = now;
+          console.log(
+            `📡 [StreamInference] ${new Date(now).toISOString()} detections=${detections.length} duration=${dt}ms`
+          );
+        }
+      }
       // Keep true runtime (no upper cap) so pacing reflects actual inference cost.
       lastInferenceDurationShared.value = Math.max(20, dt);
       if (!isLiveMode) {
@@ -805,6 +856,8 @@ export default function CameraFullScreen() {
         pixelFormat="yuv"
         photo={true}
       />
+      {!isStreamMode && (
+        <>
       {/* Detection boxes overlay */}
       {detections.length > 0 && previewSize.width > 0 && previewSize.height > 0 && lastFrameSize.width > 0 && lastFrameSize.height > 0 && (
         <View style={styles.detectionOverlay} pointerEvents="none">
@@ -919,6 +972,19 @@ export default function CameraFullScreen() {
       <View style={styles.fpsBadge} pointerEvents="none">
         <ThemedText style={styles.fpsText}>{fps} FPS</ThemedText>
       </View>
+        </>
+      )}
+      {isStreamMode && (
+        <>
+          <Pressable style={styles.backButton} onPress={() => router.back()} pointerEvents="auto">
+            <ThemedText style={styles.backButtonText}>← Back</ThemedText>
+          </Pressable>
+          <View style={styles.streamBadge} pointerEvents="none">
+            <View style={styles.streamDot} />
+            <ThemedText style={styles.streamBadgeText}>Streaming</ThemedText>
+          </View>
+        </>
+      )}
     </View>
   );
 }
@@ -1064,5 +1130,28 @@ const styles = StyleSheet.create({
     textShadowColor: 'rgba(0, 0, 0, 0.8)',
     textShadowOffset: { width: -1, height: 1 },
     textShadowRadius: 2,
+  },
+  streamBadge: {
+    position: 'absolute',
+    top: 44,
+    right: 24,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
+  },
+  streamDot: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#22c55e',
+  },
+  streamBadgeText: {
+    color: 'white',
+    fontSize: 13,
+    fontWeight: '600',
   },
 });

@@ -26,6 +26,8 @@ export interface ControlLoopConfig {
   searchStepDegrees?: number;   // Search sweep step in degrees
   searchArrivalThresholdDegrees?: number; // How close to target before issuing next search step
   minDetectionWidthPx?: number; // Reject tiny detections below this width
+  minServoAngle?: number;       // Lower servo bound for tracking/search (default: 0)
+  maxServoAngle?: number;       // Upper servo bound for tracking/search (default: planeDegrees)
 }
 
 export interface ControlLoopState {
@@ -48,6 +50,8 @@ export class ControlLoop {
   private readonly searchStepDegrees: number;
   private readonly searchArrivalThresholdDegrees: number;
   private readonly minDetectionWidthPx: number;
+  private readonly minServoAngle: number;
+  private readonly maxServoAngle: number;
   
   private readonly servo: Servo;
   private readonly controller: PIDController;
@@ -90,6 +94,8 @@ export class ControlLoop {
       searchStepDegrees = Math.max(8, Math.min(25, fieldOfView * 0.35)),
       searchArrivalThresholdDegrees = 4,
       minDetectionWidthPx = 24,
+      minServoAngle = 0,
+      maxServoAngle = planeDegrees,
     } = config;
 
     this.fieldOfView = fieldOfView;
@@ -101,13 +107,15 @@ export class ControlLoop {
     this.searchStepDegrees = Math.max(1, searchStepDegrees);
     this.searchArrivalThresholdDegrees = Math.max(0.5, searchArrivalThresholdDegrees);
     this.minDetectionWidthPx = Math.max(1, minDetectionWidthPx);
+    this.minServoAngle = Math.max(0, Math.min(planeDegrees, minServoAngle));
+    this.maxServoAngle = Math.max(this.minServoAngle, Math.min(planeDegrees, maxServoAngle));
     
     
     this.servo = new Servo({
-      initialPos: 90.0,
+      initialPos: (this.minServoAngle + this.maxServoAngle) / 2,
       speed: servoSpeed,
-      minPos: 0.0,
-      maxPos: planeDegrees,
+      minPos: this.minServoAngle,
+      maxPos: this.maxServoAngle,
     });
     
     this.controller = new PIDController({ kp, ki, kd, derivativeBufferSize });
@@ -145,8 +153,8 @@ export class ControlLoop {
   getVisibleWindow(servoPos: number): { min: number; max: number } {
     const halfFov = this.fieldOfView / 2;
     return {
-      min: Math.max(0, servoPos - halfFov),
-      max: Math.min(this.planeDegrees, servoPos + halfFov),
+      min: Math.max(this.minServoAngle, servoPos - halfFov),
+      max: Math.min(this.maxServoAngle, servoPos + halfFov),
     };
   }
 
@@ -197,11 +205,11 @@ export class ControlLoop {
         }
 
         let nextTarget = currentServoPos + this.searchDirection * this.searchStepDegrees;
-        if (nextTarget <= 0 || nextTarget >= this.planeDegrees) {
+        if (nextTarget <= this.minServoAngle || nextTarget >= this.maxServoAngle) {
           this.searchDirection = (this.searchDirection === 1 ? -1 : 1);
           nextTarget = currentServoPos + this.searchDirection * this.searchStepDegrees;
         }
-        const clampedTarget = Math.max(0, Math.min(this.planeDegrees, nextTarget));
+        const clampedTarget = Math.max(this.minServoAngle, Math.min(this.maxServoAngle, nextTarget));
         this.servo.setSearchTarget(clampedTarget);
         this.state.targetAngle = this.servo.targetPos;
         const timeMs = this.servo.getTimeToTarget(currentServoPos);
@@ -228,11 +236,11 @@ export class ControlLoop {
         // Determine search direction based on last error
         this.searchDirection = (this.state.lastError ?? 0) < 0 ? 1 : -1;
         let nextTarget = currentServoPos + this.searchDirection * this.searchStepDegrees;
-        if (nextTarget <= 0 || nextTarget >= this.planeDegrees) {
+        if (nextTarget <= this.minServoAngle || nextTarget >= this.maxServoAngle) {
           this.searchDirection = (this.searchDirection === 1 ? -1 : 1);
           nextTarget = currentServoPos + this.searchDirection * this.searchStepDegrees;
         }
-        this.servo.setSearchTarget(Math.max(0, Math.min(this.planeDegrees, nextTarget)));
+        this.servo.setSearchTarget(Math.max(this.minServoAngle, Math.min(this.maxServoAngle, nextTarget)));
         
         this.state.targetAngle = this.servo.targetPos;
         const timeMs = this.servo.getTimeToTarget(currentServoPos);
@@ -287,7 +295,7 @@ export class ControlLoop {
     const newServoTarget = currentServoPos + displacement;
     
     // Clamp to valid range
-    const clampedTarget = Math.max(0, Math.min(180, newServoTarget));
+    const clampedTarget = Math.max(this.minServoAngle, Math.min(this.maxServoAngle, newServoTarget));
     
     // Update servo target
     this.servo.moveTo(clampedTarget);
@@ -318,7 +326,7 @@ export class ControlLoop {
     this.searchDirection = 1;
     this.lastValidRadial = null;
     this.controller.reset();
-    this.servo.moveTo(90.0);
+    this.servo.moveTo((this.minServoAngle + this.maxServoAngle) / 2);
   }
 
   private selectBestBallCandidate(

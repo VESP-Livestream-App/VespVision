@@ -291,6 +291,30 @@ export default function useBle() {
     } catch (err: any) { console.warn('write error', err); }
   }, []);
 
+  const sendDeltaAngleTime = useCallback(async (deviceId: string, deltaAngle: number, timeMs: number) => {
+    if (!Number.isFinite(deltaAngle) || !Number.isFinite(timeMs)) {
+      console.warn('Invalid input', 'Delta angle and time must be numbers');
+      return;
+    }
+    try {
+      const buf = new ArrayBuffer(8);
+      const dv = new DataView(buf);
+      // Keep on-wire encoding consistent with existing command path.
+      dv.setUint32(0, (Math.trunc(deltaAngle) >>> 0), true);
+      dv.setUint32(4, (Math.trunc(timeMs) >>> 0), true);
+      const bytes = new Uint8Array(buf);
+      const b64 = base64FromBytes(bytes);
+      bleManager.writeCharacteristicWithoutResponseForDevice(
+        deviceId,
+        TARGET_SERVICE_UUID,
+        TARGET_CHARACTERISTIC_UUID,
+        b64
+      );
+    } catch (err: any) {
+      console.warn('write error', err);
+    }
+  }, []);
+
   function startPosPolling(deviceId: string) {
     if (posPollRef.current != null) return;
     setCurrentPosLoading(true);
@@ -376,6 +400,7 @@ export default function useBle() {
     connectToDevice,
     disconnectDevice,
     sendAngleTime,
+    sendDeltaAngleTime,
     connectingId,
     connectedId,
     currentPos,

@@ -5,23 +5,16 @@ import { Pressable, StyleSheet, View } from 'react-native';
 import { ThemedText } from '@/components/themed-text';
 import { ThemedView } from '@/components/themed-view';
 
-export default function CameraTabScreen() {
+export default function ProductionTabScreen() {
   const router = useRouter();
+
   return (
     <ThemedView style={styles.container}>
       <View style={styles.content}>
-        <ThemedText style={styles.title}>Camera</ThemedText>
-        <ThemedText style={styles.subtitle}>
-          Open the full-screen landscape camera for live inference.
-        </ThemedText>
-        <Pressable onPress={() => router.push('/camera-full')} android_ripple={{ color: 'rgba(255,255,255,0.2)' }}>
-          <ThemedView style={styles.button}>
-            <ThemedText style={styles.buttonText}>Open Full Screen</ThemedText>
-          </ThemedView>
-        </Pressable>
+        <ThemedText style={styles.title}>Welcome to Vesp.</ThemedText>
         <Pressable onPress={() => router.push('/camera-stream')} android_ripple={{ color: 'rgba(255,255,255,0.2)' }}>
           <ThemedView style={styles.button}>
-            <ThemedText style={styles.buttonText}>Open Stream Setup</ThemedText>
+            <ThemedText style={styles.buttonText}>Stream</ThemedText>
           </ThemedView>
         </Pressable>
       </View>
@@ -39,26 +32,22 @@ const styles = StyleSheet.create({
   content: {
     width: '100%',
     alignItems: 'center',
-    gap: 12,
+    gap: 16,
   },
   title: {
-    fontSize: 24,
+    fontSize: 28,
     fontWeight: '700',
-  },
-  subtitle: {
-    fontSize: 14,
-    textAlign: 'center',
   },
   button: {
     marginTop: 8,
-    paddingVertical: 12,
-    paddingHorizontal: 18,
+    paddingVertical: 14,
+    paddingHorizontal: 24,
     borderRadius: 10,
-    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    backgroundColor: 'rgba(0, 0, 0, 0.75)',
   },
   buttonText: {
     color: 'white',
-    fontSize: 14,
+    fontSize: 16,
     fontWeight: '600',
   },
 });
