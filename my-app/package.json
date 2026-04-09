@@ -48,6 +48,7 @@
     "react-native-vision-camera": "^4.7.3",
     "react-native-web": "~0.21.0",
     "react-native-worklets-core": "^1.6.2",
+    "streaming-module": "file:modules/streaming",
     "tflite-module": "file:modules/tflite",
     "vision-camera-resize-plugin": "^3.2.0"
   },

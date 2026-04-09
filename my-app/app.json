@@ -58,6 +58,7 @@
     "plugins": [
       "./plugins/withAndroidAssets",
       "./plugins/withYOLOFrameProcessorPlugin",
+      "./plugins/withStreamingFrameProcessorPlugin",
       "expo-router",
       [
         "expo-splash-screen",

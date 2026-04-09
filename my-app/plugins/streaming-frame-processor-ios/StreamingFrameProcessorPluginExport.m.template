@@ -1,0 +1,5 @@
+#import <VisionCamera/FrameProcessorPlugin.h>
+#import <VisionCamera/FrameProcessorPluginRegistry.h>
+#import "__PROJECT_NAME__-Swift.h"
+
+VISION_EXPORT_SWIFT_FRAME_PROCESSOR(StreamingFrameProcessorPlugin, enqueueStreamFrame)
