@@ -21,8 +21,8 @@ moveCmd_u moveCmd =
 };
 
 BLEDevice central;
-// static unsigned long lastSampleMs = 0;
-// static unsigned long lastDisplayMs = 0;
+static unsigned long lastSampleMs = 0;
+static unsigned long lastDisplayMs = 0;
 extern volatile bool newCmdReady;
 
 // forward declarations
@@ -34,7 +34,7 @@ void setup()
   Serial.begin(115200);
   bleSetup();
   servoSetup();
-  // displaySetup();
+  displaySetup();
 }
 
 
@@ -50,20 +50,20 @@ void loop() {
     }
   }
   
-  // unsigned long now = millis();
-  // float soc_pct = -1.0f;
+  unsigned long now = millis();
+  float soc_pct = -1.0f;
 
-  // if (now - lastSampleMs >= 1000) 
-  // {
-  //   lastSampleMs += 1000;
-  //   soc_pct = calculateDisplayData();
-  // }
+  if (now - lastSampleMs >= 8000) 
+  {
+    lastSampleMs += 8000;
+    soc_pct = calculateDisplayData();
+  }
 
-  // if (now - lastDisplayMs >= 1000) 
-  // {
-  //   lastDisplayMs += 1000;
-  //   updateDisplay();
-  // }
+  if (now - lastDisplayMs >= 8000) 
+  {
+    lastDisplayMs += 8000;
+    updateDisplay();
+  }
   
   // If connected, handle commands
   if (central && central.connected()) 
@@ -71,6 +71,11 @@ void loop() {
     if (newCmdReady) 
     {
       newCmdReady = false;
+      Serial.print("Angle Received: ");
+      Serial.println( moveCmd.cmd.angle);
+      Serial.print("Time to Move: ");
+      Serial.println(moveCmd.cmd.time);
+
       adjustServo(moveCmd.cmd.angle, moveCmd.cmd.time);
     }
 

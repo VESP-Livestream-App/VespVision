@@ -17,7 +17,6 @@ void servoSetup()
 void adjustServo(int angle, unsigned long durationMs) 
 {
   startAngle = mgs90.read();
-  Serial.println(startAngle);
   targetAngle = constrain(startAngle + angle, 0, 180);
 
   if (durationMs < 20) durationMs = 20;
